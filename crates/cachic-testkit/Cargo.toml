@@ -1,0 +1,14 @@
+[package]
+name = "cachic-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Development-only test harness for cachic: mock CDN, differential tester, load generator"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+bytes.workspace = true

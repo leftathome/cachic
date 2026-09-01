@@ -1,0 +1,19 @@
+[package]
+name = "cachic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "HTTP caching proxy for game-distribution and OS-update CDN traffic"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+cachic-testkit = { path = "../cachic-testkit" }

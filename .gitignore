@@ -1,0 +1,18 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Local benchmark and cache scratch
+/.bench/
+/.cache-data/
+
+# Navigator context markers
+.context-markers/
+
+# Navigator temporary files
+.agent/.nav-temp/
+
+# Navigator runtime state (per-session, not shared)
+.agent/.nav-read-counter.json
+.agent/.nav-workflow-state.json
+.agent/.features-shown-*
