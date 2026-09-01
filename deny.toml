@@ -12,7 +12,12 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # paste 1.0.15 is unmaintained (proc-macro only, no runtime code). It reaches us solely
+    # through foyer-memory, so we cannot drop it without dropping foyer. Revisit when foyer
+    # releases a version without it; tracked as an M0 finding in docs/adr/0003.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2
@@ -25,6 +30,11 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # Boost Software License: permissive, no attribution requirement in binaries (xxhash-rust).
+    "BSL-1.0",
+    # Community Data License Agreement, permissive. This covers webpki-roots' certificate data
+    # rather than code; it is the standard licence for Mozilla's root store.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 
