@@ -1,0 +1,6 @@
+[default.extend-words]
+# "lancache" and its ecosystem spell things their own way.
+lancache = "lancache"
+
+[files]
+extend-exclude = ["LICENSE-APACHE", ".agent/grafana/navigator-dashboard.json"]

@@ -8,7 +8,7 @@ In progress / Blocked / Done. Update the status column as work lands.
 | Task | Title | Status |
 |---|---|---|
 | [TASK-01](./TASK-01-repo-skeleton.md) | Repository skeleton and dev loop | Done |
-| [TASK-02](./TASK-02-ci-baseline.md) | CI baseline | Not started |
+| [TASK-02](./TASK-02-ci-baseline.md) | CI baseline | Done (image build deferred to TASK-15) |
 | [TASK-03](./TASK-03-m0-spike.md) | M0 spike - hyper + reqwest + foyer sliced GET prototype | Not started |
 | [TASK-04](./TASK-04-m0-measurements.md) | M0 measurements | Not started |
 | [TASK-05](./TASK-05-pingora-vs-hyper.md) | Pingora vs hyper evaluation note | Not started |
