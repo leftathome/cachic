@@ -9,13 +9,19 @@ In progress / Blocked / Done. Update the status column as work lands.
 |---|---|---|
 | [TASK-01](./TASK-01-repo-skeleton.md) | Repository skeleton and dev loop | Done |
 | [TASK-02](./TASK-02-ci-baseline.md) | CI baseline | Done (image build deferred to TASK-15) |
-| [TASK-03](./TASK-03-m0-spike.md) | M0 spike - hyper + reqwest + foyer sliced GET prototype | Not started |
-| [TASK-04](./TASK-04-m0-measurements.md) | M0 measurements | Not started |
-| [TASK-05](./TASK-05-pingora-vs-hyper.md) | Pingora vs hyper evaluation note | Not started |
-| [TASK-06](./TASK-06-m0-adrs.md) | M0 architecture decision records | Not started |
+| [TASK-03](./TASK-03-m0-spike.md) | M0 spike - hyper + reqwest + foyer sliced GET prototype | Done |
+| [TASK-04](./TASK-04-m0-measurements.md) | M0 measurements | Done (provisional hardware; NUC/Synology runs outstanding) |
+| [TASK-05](./TASK-05-pingora-vs-hyper.md) | Pingora vs hyper evaluation note | Done (ADR 0002) |
+| [TASK-06](./TASK-06-m0-adrs.md) | M0 architecture decision records | Done (0003 provisional) |
 
 **Exit criteria**: measured hit throughput >= 8 Gbps on the NUC with 8 clients; foyer index memory
 per entry known; go/no-go on Rust confirmed; CI green on lint/test.
+
+**Status: NOT met.** CI is green and index memory is known (381-463 bytes/entry). Throughput was
+measured at 2.8 Gbps on a WSL2 box with origin, proxy and clients colocated - not the NUC, so the
+criterion is untested rather than failed. The go/no-go is blocked: foyer 0.22.4 loses more than
+half its disk tier across a clean restart, which is a P0 (FR-43) failure. See
+`docs/benchmarks/m0/README.md` and ADR 0003. **Do not start M1's TASK-11 until this is resolved.**
 
 ## M1 - MVP proxy, v0.1 (weeks 3-6)
 

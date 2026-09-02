@@ -77,6 +77,7 @@ async fn harness(tag: &str, cdn: CdnConfig) -> (MockCdn, SpikeProxy, Scratch) {
         memory_bytes: 8 * 1024 * 1024,
         disk_bytes: 256 * 1024 * 1024,
         block_bytes: 4 * 1024 * 1024,
+        direct_io: false,
     };
     let proxy = SpikeProxy::start(config).await.unwrap();
     (origin, proxy, scratch)

@@ -1,0 +1,92 @@
+scenario,metric,value,unit,notes
+codec,encode_throughput,4209.97,MiB/s,includes xxh3 checksum
+codec,encode_throughput,35.32,Gbps,
+codec,decode_throughput,9324.64,MiB/s,includes checksum verification and a copy
+codec,decode_throughput,78.22,Gbps,
+store,config,mem=2048MiB disk=4096MiB block=64MiB data=512MiB direct=false,,
+store,payload_generation,2427.30,MiB/s,allocation and fill only, no store involved
+store,insert_rate,565.27,MiB/s,512 distinct entries of 1 MiB, mem tier 2048 MiB; includes payload generation
+store,insert_rate_net,736.87,MiB/s,payload generation subtracted
+store,insert_rate_net,6.18,Gbps,
+store,rss_after_insert,572579840,bytes,delta 566755328 over 536870912 bytes inserted
+store,flush_time,0.003,s,close() after the inserts above
+store,insert_plus_flush,733.75,MiB/s,durable write throughput
+store,insert_plus_flush,6.16,Gbps,
+store,read_throughput_pass0,469.47,MiB/s,cold process: disk tier plus memory-tier population; 9 misses; includes xxh3 over every byte
+store,read_throughput_pass0,3.94,Gbps,
+store,read_misses_pass0,9,count,of 512
+store,read_throughput_pass1,27240.38,MiB/s,warm: memory tier; 9 misses; includes xxh3 over every byte
+store,read_throughput_pass1,228.51,Gbps,
+store,read_misses_pass1,9,count,of 512
+store,close_time,0.004,s,second close, after reads
+store,config,mem=64MiB disk=4096MiB block=64MiB data=512MiB direct=false,,
+store,payload_generation,1787.75,MiB/s,allocation and fill only, no store involved
+store,insert_rate,1752.35,MiB/s,512 distinct entries of 1 MiB, mem tier 64 MiB; includes payload generation
+store,insert_rate_net,88479.09,MiB/s,payload generation subtracted
+store,insert_rate_net,742.22,Gbps,
+store,rss_after_insert,107286528,bytes,delta 101081088 over 536870912 bytes inserted
+store,flush_time,0.017,s,close() after the inserts above
+store,insert_plus_flush,22134.29,MiB/s,durable write throughput
+store,insert_plus_flush,185.68,Gbps,
+store,read_throughput_pass0,690.02,MiB/s,cold process: disk tier plus memory-tier population; 142 misses; includes xxh3 over every byte
+store,read_throughput_pass0,5.79,Gbps,
+store,read_misses_pass0,142,count,of 512
+store,read_throughput_pass1,931.21,MiB/s,warm: disk tier, memory tier too small to retain; 142 misses; includes xxh3 over every byte
+store,read_throughput_pass1,7.81,Gbps,
+store,read_misses_pass1,142,count,of 512
+store,close_time,0.001,s,second close, after reads
+store,config,mem=64MiB disk=4096MiB block=64MiB data=512MiB direct=true,,
+store,payload_generation,2490.15,MiB/s,allocation and fill only, no store involved
+store,insert_rate,1441.02,MiB/s,512 distinct entries of 1 MiB, mem tier 64 MiB; includes payload generation
+store,insert_rate_net,3420.31,MiB/s,payload generation subtracted
+store,insert_rate_net,28.69,Gbps,
+store,rss_after_insert,108109824,bytes,delta 101994496 over 536870912 bytes inserted
+store,flush_time,0.015,s,close() after the inserts above
+store,insert_plus_flush,3106.73,MiB/s,durable write throughput
+store,insert_plus_flush,26.06,Gbps,
+store,read_throughput_pass0,463.28,MiB/s,cold process: disk tier plus memory-tier population; 164 misses; includes xxh3 over every byte
+store,read_throughput_pass0,3.89,Gbps,
+store,read_misses_pass0,164,count,of 512
+store,read_throughput_pass1,936.60,MiB/s,warm: disk tier, memory tier too small to retain; 164 misses; includes xxh3 over every byte
+store,read_throughput_pass1,7.86,Gbps,
+store,read_misses_pass1,164,count,of 512
+store,close_time,0.003,s,second close, after reads
+index_memory,rss_per_entry,462.7,bytes,100000 entries, RSS 4587520 -> 50855936, insert took 6.19s
+index_memory,insert_rate,16161,entries/s,
+index_memory,rss_per_entry,380.8,bytes,1000000 entries, RSS 50077696 -> 430841856, insert took 61.13s
+index_memory,insert_rate,16359,entries/s,
+recovery,store_open_time,0.001,s,536870912 bytes cached across 512 slices
+recovery,time_to_first_hit,1.649,ms,slice 0 read after reopen
+recovery,survived_restart,true,bool,
+recovery,slices_recovered,30,count,of 512 written
+recovery,recovery_ratio,0.059,ratio,
+proxy,cold_fill_throughput,0.92,Gbps,single client, mock origin on loopback
+proxy,origin_direct_throughput,0.95,Gbps,same object straight from the origin
+proxy,cold_fill_overhead,3.1,percent,proxy cold fill versus direct; NFR-3 wants fill >= 95% of direct
+proxy,hit_throughput,2.74,Gbps,round 0, 8 clients, memory tier
+proxy,ttfb_p50,1.13,ms,round 0, memory tier
+proxy,ttfb_p99,1.72,ms,round 0, memory tier
+proxy,rss,1242632192,bytes,round 0; mem tier 1024 MiB
+proxy,hit_throughput,2.72,Gbps,round 1, 8 clients, memory tier
+proxy,ttfb_p50,1.39,ms,round 1, memory tier
+proxy,ttfb_p99,4.10,ms,round 1, memory tier
+proxy,rss,1243025408,bytes,round 1; mem tier 1024 MiB
+proxy,hit_throughput,2.81,Gbps,round 2, 8 clients, memory tier
+proxy,ttfb_p50,1.87,ms,round 2, memory tier
+proxy,ttfb_p99,11.66,ms,round 2, memory tier
+proxy,rss,1238700032,bytes,round 2; mem tier 1024 MiB
+proxy,upstream_requests_total,257,count,cold fill plus one direct read
+proxy,upstream_bytes_total,536870912,bytes,object is 268435456 bytes
+proxy,cold_fill_throughput,0.95,Gbps,single client, mock origin on loopback
+proxy,origin_direct_throughput,1.13,Gbps,same object straight from the origin
+proxy,cold_fill_overhead,19.1,percent,proxy cold fill versus direct; NFR-3 wants fill >= 95% of direct
+proxy,hit_throughput,2.80,Gbps,round 0, 8 clients, disk tier
+proxy,ttfb_p50,2.61,ms,round 0, disk tier
+proxy,ttfb_p99,6.31,ms,round 0, disk tier
+proxy,rss,1009967104,bytes,round 0; mem tier 32 MiB
+proxy,hit_throughput,2.80,Gbps,round 1, 8 clients, disk tier
+proxy,ttfb_p50,3.14,ms,round 1, disk tier
+proxy,ttfb_p99,6.73,ms,round 1, disk tier
+proxy,rss,1028341760,bytes,round 1; mem tier 32 MiB
+proxy,upstream_requests_total,257,count,cold fill plus one direct read
+proxy,upstream_bytes_total,536870912,bytes,object is 268435456 bytes

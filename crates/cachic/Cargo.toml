@@ -25,6 +25,33 @@ reqwest.workspace = true
 dashmap.workspace = true
 clap.workspace = true
 
+# The measurement harness uses the testkit's mock origin, so it is a normal dependency of that
+# binary only. Cargo has no per-binary deps, so it is declared here and gated by the bin target.
+[[bin]]
+name = "cachic"
+path = "src/main.rs"
+
+[[bin]]
+name = "spike"
+path = "src/bin/spike.rs"
+
+[[bin]]
+name = "foyerprobe"
+path = "src/bin/foyerprobe.rs"
+
+[[bin]]
+name = "measure"
+path = "src/bin/measure.rs"
+required-features = ["measure"]
+
+[features]
+default = []
+measure = ["dep:cachic-testkit"]
+
+[dependencies.cachic-testkit]
+path = "../cachic-testkit"
+optional = true
+
 [dev-dependencies]
 cachic-testkit = { path = "../cachic-testkit" }
 reqwest.workspace = true

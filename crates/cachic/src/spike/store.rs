@@ -22,6 +22,11 @@ pub struct StoreConfig {
     pub disk_bytes: usize,
     /// Disk block size. Must comfortably exceed one encoded slice.
     pub block_bytes: usize,
+    /// Use O_DIRECT for the disk tier.
+    ///
+    /// foyer defaults this to true. The plan calls out page-cache double buffering as an M0
+    /// question; it turns out to be a correctness question too, not only a throughput one.
+    pub direct_io: bool,
 }
 
 impl Default for StoreConfig {
@@ -30,6 +35,7 @@ impl Default for StoreConfig {
             memory_bytes: 64 * 1024 * 1024,
             disk_bytes: 1024 * 1024 * 1024,
             block_bytes: 16 * 1024 * 1024,
+            direct_io: true,
         }
     }
 }
@@ -45,6 +51,7 @@ impl SpikeStore {
         std::fs::create_dir_all(dir)?;
         let device = FsDeviceBuilder::new(dir)
             .with_capacity(config.disk_bytes)
+            .with_direct(config.direct_io)
             .build()?;
         let inner: HybridCache<SliceKey, SliceValue> = HybridCacheBuilder::new()
             .with_name("cachic-spike")
@@ -122,6 +129,7 @@ mod tests {
                 memory_bytes: 4 * 1024 * 1024,
                 disk_bytes: 64 * 1024 * 1024,
                 block_bytes: 4 * 1024 * 1024,
+                direct_io: false,
             },
         )
         .await
