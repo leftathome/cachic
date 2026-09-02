@@ -103,9 +103,12 @@ code.
 | [TASK-30](./TASK-30-grafana-dashboard.md) | Grafana dashboard | Done |
 | [TASK-31](./TASK-31-service-rule-parity.md) | Per-service rule parity review | Done (real-traffic replay outstanding) |
 | [TASK-32](./TASK-32-docs-site.md) | Documentation site | Done |
-| [TASK-33](./TASK-33-soak-and-v1.md) | Soak, definition of done, v1.0 release | Not started |
+| [TASK-33](./TASK-33-soak-and-v1.md) | Soak, definition of done, v1.0 release | Harness done; 7-day soak and release need hardware and a decision |
 
 **Exit criteria**: Appendix C definition of done.
+
+**Status: assessed in `docs/definition-of-done.md`.** Six items are blocked on the reference
+hardware and real client credentials; none is blocked on code. No tag has been pushed.
 
 ## Dependency Notes
 

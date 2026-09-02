@@ -23,12 +23,17 @@ What changes is that the cache is a purpose-built application rather than genera
 
 ## Status
 
-**Pre-alpha, and it works.** The proxy serves cached content end to end: slice-aware ranges,
-coalescing, generation-based invalidation, an admin API, metrics and health probes. It has not run
-against real game clients at scale, the published benchmarks against `lancachenet/monolithic` do
-not exist yet, and there is no release pipeline. Do not point a LAN party at it.
+**Feature-complete against the plan; unreleased and unproven in the field.** The proxy serves
+cached content end to end, with SNI pass-through on 443, an admin API, metrics, health probes,
+automatic domain-list refresh and a Grafana dashboard. It is packaged as a container and a Helm
+chart, and a release pipeline exists but has never been triggered.
 
-See [the task index](.agent/tasks/TASK-INDEX.md) for what is done and what is not.
+What has *not* happened: no benchmark against `lancachenet/monolithic`, no run against real game
+clients, no 7-day soak, no tagged release. Six items in the
+[definition of done](docs/definition-of-done.md) are blocked on reference hardware rather than on
+code. Do not point a LAN party at it yet.
+
+See [the task index](.agent/tasks/TASK-INDEX.md) for the milestone-by-milestone position.
 
 ## Quickstart
 
@@ -74,6 +79,9 @@ cache.
 | [Flux example](deploy/flux/README.md) | GitOps deployment |
 | [Architecture decisions](docs/adr/) | Why it is built this way, and what would change each answer |
 | [M0 measurements](docs/benchmarks/m0/README.md) | Throughput, index cost, and a benchmark that lied |
+| [Per-service parity](docs/service-parity.md) | Reviewed against monolithic's nginx config |
+| [Definition of done](docs/definition-of-done.md) | What is verified, and what needs hardware |
+| [Migrating from lancache](docs/migration-from-lancache.md) | What carries over, and what does not |
 | [PRD](docs/cachic-PRD.md) / [plan](docs/cachic-IMPLEMENTATION-PLAN.md) | Requirements and milestones |
 
 ## Two things worth knowing before you deploy it

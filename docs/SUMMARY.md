@@ -12,6 +12,7 @@
 # Understanding it
 
 - [Per-service parity](./service-parity.md)
+- [Definition of done](./definition-of-done.md)
 - [Benchmarks](./benchmarks/README.md)
   - [M0 measurements](./benchmarks/m0/README.md)
 

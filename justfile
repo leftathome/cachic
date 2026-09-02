@@ -25,6 +25,11 @@ test-std:
 bench:
     cargo bench
 
+# Soak test. Verifies every read against the generator; NFR-7 allows zero corrupt bytes.
+#   just soak 3600
+soak SECONDS="60":
+    cargo run --release --example soak -- --seconds {{SECONDS}}
+
 # Build the documentation site.
 book:
     mdbook build
