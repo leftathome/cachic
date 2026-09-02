@@ -83,7 +83,10 @@ fn chain(e: &dyn std::error::Error) -> String {
 }
 
 async fn run(config: Config) -> Result<(), Fatal> {
-    let rules = config.prepare().map_err(|e| Fatal::Config(chain(&e)))?;
+    // Operator rules are layered over the defaults transcribed from monolithic, so parity is the
+    // starting point rather than something an operator has to recreate.
+    let rules =
+        cachic::services::defaults::merge(config.prepare().map_err(|e| Fatal::Config(chain(&e)))?);
 
     let (metrics, foyer_registry) = Metrics::new()
         .map_err(|e| Fatal::Unavailable(format!("cannot create the metrics registry: {e}")))?;

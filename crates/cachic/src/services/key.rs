@@ -120,6 +120,78 @@ impl CacheKey {
     }
 }
 
+/// Normalise a path the way nginx's `$uri` does.
+///
+/// monolithic's cache key is `$cacheidentifier$uri$slice_range`, and nginx's `$uri` is the
+/// *decoded and normalised* path. Using the raw path instead would cache the same object twice
+/// under different keys whenever a client sent `%41` for `A` or a doubled slash - a hit-rate loss
+/// rather than a correctness bug, but a parity gap all the same (G1).
+///
+/// Percent-decoding is applied only to bytes that are valid UTF-8 once decoded; anything else is
+/// left as written, since a key is only useful if it is stable.
+pub fn normalise_path(path: &str) -> String {
+    let decoded = percent_decode(path);
+
+    // Collapse duplicate slashes and resolve `.` and `..`, as nginx does.
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in decoded.split('/') {
+        match segment {
+            "" | "." => continue,
+            ".." => {
+                // A `..` that would escape the root is dropped rather than applied: nginx rejects
+                // such a request, and a key that walks above the root is meaningless.
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+
+    let mut out = String::with_capacity(decoded.len());
+    for segment in &segments {
+        out.push('/');
+        out.push_str(segment);
+    }
+    if out.is_empty() {
+        out.push('/');
+    } else if decoded.ends_with('/') {
+        // A trailing slash is significant to a CDN; preserve it.
+        out.push('/');
+    }
+    out
+}
+
+/// Percent-decode, leaving invalid sequences as written.
+fn percent_decode(input: &str) -> String {
+    if !input.contains('%') {
+        return input.to_owned();
+    }
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| -> Option<u8> {
+                match b {
+                    b'0'..=b'9' => Some(b - b'0'),
+                    b'a'..=b'f' => Some(b - b'a' + 10),
+                    b'A'..=b'F' => Some(b - b'A' + 10),
+                    _ => None,
+                }
+            };
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    // A decoded path that is not UTF-8 is left as originally written: a key must be stable, and
+    // lossy conversion would map distinct paths onto one another.
+    String::from_utf8(out).unwrap_or_else(|_| input.to_owned())
+}
+
 /// Split a request target into path and query.
 fn split_target(target: &str) -> (&str, Option<&str>) {
     match target.split_once('?') {
@@ -137,11 +209,9 @@ pub fn normalise(service: &str, host: &str, target: &str, rule: &CompiledRule) -
         key.push_str(&Matcher::normalise_host(host));
     }
     // Paths are case-sensitive per RFC 3986, and Steam's content paths genuinely are. Do not
-    // lowercase here; doing so would merge distinct objects.
-    if !path.starts_with('/') {
-        key.push('/');
-    }
-    key.push_str(path);
+    // lowercase here; doing so would merge distinct objects. Normalisation matches nginx's
+    // `$uri`, which is what monolithic keys on.
+    key.push_str(&normalise_path(path));
     if rule.keep_query {
         if let Some(query) = query {
             key.push('?');
@@ -311,6 +381,79 @@ mod tests {
     fn targets_without_a_leading_slash_are_normalised() {
         let a = normalise("svc", "h", "depot/x", &rule());
         assert_eq!(a.key, "/depot/x");
+    }
+
+    #[test]
+    fn percent_escapes_are_decoded_as_nginx_decodes_them() {
+        // monolithic keys on $uri, which is decoded. Without this, a client sending %41 for A
+        // caches the same object a second time under a different key.
+        assert_eq!(normalise_path("/depot/%41"), "/depot/A");
+        assert_eq!(normalise_path("/a%20b"), "/a b");
+        assert_eq!(
+            normalise("s", "h", "/depot/%41", &rule()).object_id(),
+            normalise("s", "h", "/depot/A", &rule()).object_id()
+        );
+    }
+
+    #[test]
+    fn duplicate_slashes_and_dot_segments_collapse() {
+        assert_eq!(normalise_path("/a//b"), "/a/b");
+        assert_eq!(normalise_path("/a/./b"), "/a/b");
+        assert_eq!(normalise_path("/a/b/../c"), "/a/c");
+        assert_eq!(normalise_path("//"), "/");
+    }
+
+    #[test]
+    fn a_dot_dot_cannot_escape_the_root() {
+        // nginx rejects such a request outright; a key that walks above the root is meaningless.
+        assert_eq!(normalise_path("/../etc/passwd"), "/etc/passwd");
+        assert_eq!(normalise_path("/a/../../b"), "/b");
+    }
+
+    #[test]
+    fn a_trailing_slash_is_preserved() {
+        // Significant to a CDN, so it is part of the key.
+        assert_eq!(normalise_path("/a/b/"), "/a/b/");
+        assert_ne!(normalise_path("/a/b/"), normalise_path("/a/b"));
+    }
+
+    #[test]
+    fn malformed_escapes_are_left_alone() {
+        // A key must be stable. Guessing at a broken escape would make it depend on our guess.
+        assert_eq!(normalise_path("/a%zz"), "/a%zz");
+        assert_eq!(normalise_path("/a%"), "/a%");
+        assert_eq!(normalise_path("/a%4"), "/a%4");
+    }
+
+    #[test]
+    fn a_non_utf8_decode_leaves_the_path_as_written() {
+        // Lossy conversion would map distinct paths onto one another.
+        assert_eq!(normalise_path("/%ff%fe"), "/%ff%fe");
+    }
+
+    #[test]
+    fn normalisation_never_panics_on_arbitrary_input() {
+        let mut seed = 0x1357_9bdf_2468_ace0u64;
+        for _ in 0..20_000 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let len = (seed % 40) as usize;
+            let path: String = (0..len)
+                .map(|i| {
+                    let b = ((seed >> (i % 8 * 8)) & 0xff) as u8;
+                    match b % 6 {
+                        0 => '/',
+                        1 => '%',
+                        2 => '.',
+                        3 => (b'a' + b % 26) as char,
+                        4 => (b'0' + b % 10) as char,
+                        _ => b as char,
+                    }
+                })
+                .collect();
+            let _ = normalise_path(&path);
+        }
     }
 
     #[test]
