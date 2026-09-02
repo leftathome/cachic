@@ -30,6 +30,10 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 serde_json = "1"
 regex = "1"
+# `default-features = false` drops the `system-config` feature deliberately: it removes the
+# constructors that read /etc/resolv.conf, making use of the system resolver a compile error.
+# See upstream::resolver and ADR 0008.
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
 
 [profile.release]
 lto = true

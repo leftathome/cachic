@@ -28,6 +28,7 @@ serde.workspace = true
 toml.workspace = true
 serde_json.workspace = true
 regex.workspace = true
+hickory-resolver.workspace = true
 
 [[bin]]
 name = "cachic"
