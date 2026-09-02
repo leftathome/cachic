@@ -19,7 +19,12 @@ use cachic::{
     config::{units, Config},
     orchestrator::Orchestrator,
     proxy::server::{Server, ServerConfig},
-    services::{domains, domains::DomainList, key::CompiledRule, matcher::Matcher},
+    services::{
+        domains,
+        domains::DomainList,
+        key::CompiledRule,
+        refresh::{self, LiveServices, RefreshSource},
+    },
     sni::proxy::SniProxy,
     store::{hybrid::SliceStore, hybrid::StoreConfig, index::ObjectIndex},
     telemetry::{logs, metrics::Metrics},
@@ -133,10 +138,10 @@ async fn run(config: Config) -> Result<(), Fatal> {
         None => domains::bundled()
             .map_err(|e| Fatal::Unavailable(format!("the bundled domain list is unusable: {e}")))?,
     };
-    let matcher = Arc::new(Matcher::build(&domain_list));
+    let services = LiveServices::new(domain_list.clone());
     tracing::info!(
-        services = matcher.service_count(),
-        patterns = matcher.pattern_count(),
+        services = services.matcher().service_count(),
+        patterns = services.matcher().pattern_count(),
         source = config
             .cache_domains_dir
             .as_ref()
@@ -194,7 +199,7 @@ async fn run(config: Config) -> Result<(), Fatal> {
         http_addr,
         Arc::new(ServerConfig {
             orchestrator,
-            matcher,
+            services: services.clone(),
             rules: Arc::new(rules),
             compiled: Arc::new(compiled),
             hostname: hostname(),
@@ -214,6 +219,27 @@ async fn run(config: Config) -> Result<(), Fatal> {
         };
         Fatal::Unavailable(format!("cannot bind the HTTP port {http_addr}: {e}{hint}"))
     })?;
+    // Refresh the domain list in the background (FR-61). A failed refresh is logged and the
+    // previous list keeps serving; a refresh never takes the cache down.
+    let refresh_source = RefreshSource {
+        repo: config.cache_domains_repo.clone(),
+        interval: config.cache_domains_refresh,
+    };
+    if refresh_source.interval.is_zero() {
+        tracing::info!("domain list refresh disabled; using the list loaded at startup");
+    } else {
+        tracing::info!(
+            repo = %refresh_source.repo,
+            interval_secs = refresh_source.interval.as_secs(),
+            "domain list refresh enabled"
+        );
+    }
+    let refresh_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| Fatal::Unavailable(format!("cannot build the refresh client: {e}")))?;
+    refresh::spawn(services.clone(), refresh_client, refresh_source);
+
     // Port 443: SNI pass-through, no decryption (FR-08, N2). Replaces sniproxy in the lancache
     // deployment model.
     let https_addr = SocketAddr::from(([0, 0, 0, 0], config.https_port));

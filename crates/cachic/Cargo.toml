@@ -31,6 +31,7 @@ regex.workspace = true
 hickory-resolver.workspace = true
 redb.workspace = true
 libc.workspace = true
+arc-swap.workspace = true
 prometheus.workspace = true
 mixtrics.workspace = true
 axum.workspace = true

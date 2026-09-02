@@ -9,7 +9,7 @@ use std::{sync::Arc, time::Duration};
 use cachic::{
     orchestrator::Orchestrator,
     proxy::server::{Server, ServerConfig},
-    services::{domains::DomainList, key::CompiledRule, matcher::Matcher},
+    services::{domains::DomainList, key::CompiledRule},
     store::{
         hybrid::{SliceStore, StoreConfig},
         index::ObjectIndex,
@@ -68,13 +68,11 @@ impl Harness {
         let index_json = r#"{"cache_domains":[{"name":"mock","domain_files":["m.txt"]}]}"#;
         let mut files = std::collections::BTreeMap::new();
         files.insert("m.txt".to_string(), format!("{host}\n"));
-        let matcher = Arc::new(Matcher::build(
-            &DomainList::parse(index_json, &files).unwrap(),
-        ));
+        let list = DomainList::parse(index_json, &files).unwrap();
 
         let config = Arc::new(ServerConfig::with_defaults(
             orchestrator.clone(),
-            matcher,
+            list,
             "test-cache",
         ));
         let drain = config.drain.clone();

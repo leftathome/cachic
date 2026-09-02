@@ -31,10 +31,7 @@ use crate::{
     config::rules::Rules,
     orchestrator::{payload_window, Orchestrator, OrchestratorError},
     proxy::{headers, heartbeat},
-    services::{
-        key::{self, CompiledRule},
-        matcher::Matcher,
-    },
+    services::key::{self, CompiledRule},
 };
 
 /// Response bodies are unsync-boxed: foyer's `get_or_fetch` future is `!Sync`, so a body that
@@ -48,7 +45,9 @@ pub struct ServerConfig {
     pub log_format: crate::config::LogFormat,
     /// Metrics, if telemetry is wired. Absent in tests that do not care.
     pub metrics: Option<Arc<crate::telemetry::metrics::Metrics>>,
-    pub matcher: Arc<Matcher>,
+    /// The live domain list. Read per request through an `ArcSwap`, so a refresh takes effect
+    /// without restarting and without a lock on the hot path.
+    pub services: Arc<crate::services::refresh::LiveServices>,
     pub rules: Arc<Rules>,
     pub compiled: Arc<std::collections::HashMap<String, CompiledRule>>,
     pub hostname: String,
@@ -61,14 +60,28 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     /// Defaults for tests and callers that do not care about limits.
+    /// Defaults for tests and callers that do not refresh their service list.
     pub fn with_defaults(
         orchestrator: Arc<Orchestrator>,
-        matcher: Arc<Matcher>,
+        list: crate::services::domains::DomainList,
+        hostname: impl Into<String>,
+    ) -> Self {
+        Self::with_services(
+            orchestrator,
+            crate::services::refresh::LiveServices::new(list),
+            hostname,
+        )
+    }
+
+    /// Build with a live, refreshable service list.
+    pub fn with_services(
+        orchestrator: Arc<Orchestrator>,
+        services: Arc<crate::services::refresh::LiveServices>,
         hostname: impl Into<String>,
     ) -> Self {
         Self {
             orchestrator,
-            matcher,
+            services,
             rules: Arc::new(Rules::default()),
             compiled: Arc::new(std::collections::HashMap::new()),
             hostname: hostname.into(),
@@ -313,7 +326,10 @@ async fn serve(
         .unwrap_or_default()
         .to_owned();
 
-    let Some(service) = config.matcher.service_for(&host) else {
+    // One read of the live matcher per request. A refresh swaps the pointer; a request that
+    // started before the swap finishes against the list it started with.
+    let matcher = config.services.matcher();
+    let Some(service) = matcher.service_for(&host) else {
         // Unmatched hosts are 404 by default. Proxying them uncached would make this an open
         // proxy on the LAN (FR-02, FR-64).
         if config.passthrough_unknown_hosts {

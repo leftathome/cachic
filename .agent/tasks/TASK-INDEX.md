@@ -99,8 +99,8 @@ code.
 |---|---|---|
 | [TASK-27](./TASK-27-sni-passthrough.md) | SNI pass-through on 443 | Done |
 | [TASK-28](./TASK-28-readahead-tuning.md) | Read-ahead tuning | Done |
-| [TASK-29](./TASK-29-domain-auto-refresh.md) | cache-domains auto-refresh with hot reload | Not started |
-| [TASK-30](./TASK-30-grafana-dashboard.md) | Grafana dashboard | Not started |
+| [TASK-29](./TASK-29-domain-auto-refresh.md) | cache-domains auto-refresh with hot reload | Done |
+| [TASK-30](./TASK-30-grafana-dashboard.md) | Grafana dashboard | Done |
 | [TASK-31](./TASK-31-service-rule-parity.md) | Per-service rule parity review | Not started |
 | [TASK-32](./TASK-32-docs-site.md) | Documentation site | Not started |
 | [TASK-33](./TASK-33-soak-and-v1.md) | Soak, definition of done, v1.0 release | Not started |

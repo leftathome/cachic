@@ -23,7 +23,7 @@ use std::{
 use cachic::{
     orchestrator::Orchestrator,
     proxy::server::{Server, ServerConfig},
-    services::{domains::DomainList, matcher::Matcher},
+    services::domains::DomainList,
     store::{
         hybrid::{SliceStore, StoreConfig},
         index::ObjectIndex,
@@ -145,17 +145,15 @@ impl Rig {
         let host = origin.addr().ip().to_string();
         let mut files = std::collections::BTreeMap::new();
         files.insert("m.txt".to_string(), format!("{host}\n"));
-        let matcher = Arc::new(Matcher::build(
-            &DomainList::parse(
-                r#"{"cache_domains":[{"name":"bench","domain_files":["m.txt"]}]}"#,
-                &files,
-            )
-            .unwrap(),
-        ));
+        let list = DomainList::parse(
+            r#"{"cache_domains":[{"name":"bench","domain_files":["m.txt"]}]}"#,
+            &files,
+        )
+        .unwrap();
 
         let server = Server::bind(
             "127.0.0.1:0".parse().unwrap(),
-            Arc::new(ServerConfig::with_defaults(orchestrator, matcher, "bench")),
+            Arc::new(ServerConfig::with_defaults(orchestrator, list, "bench")),
         )
         .await
         .unwrap();
