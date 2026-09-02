@@ -24,7 +24,7 @@ use cachic::{
 use cachic_testkit::{
     content,
     differ::{self, Generator},
-    mockcdn::{Config as CdnConfig, MockCdn},
+    mockcdn::{Config as CdnConfig, MockCdn, RangeBehaviour},
 };
 
 const SLICE: u32 = 64 * 1024;
@@ -258,6 +258,89 @@ async fn a_client_disconnect_does_not_cancel_the_fill() {
         beyond_probe > 0,
         "the disconnect abandoned every slice past the probe; \
          fills must outlive their connection (FR-31)"
+    );
+}
+
+#[tokio::test]
+async fn a_range_ignoring_origin_still_serves_ranges() {
+    // FR-13: the origin answers a Range request with 200 and the whole body. The object is
+    // filled once and sliced, and the client still gets exactly the range it asked for.
+    let h = Harness::start(
+        "m2-noranges",
+        CdnConfig {
+            range_behaviour: RangeBehaviour::Ignore,
+            ..CdnConfig::default()
+        },
+    )
+    .await;
+    let size = 3 * SLICE as u64 + 1_111;
+    let path = MockCdn::object_path("stubborn", size);
+    let start = SLICE as u64 + 100;
+    let end = start + 5_000;
+
+    let r = h
+        .request(&path)
+        .header("range", format!("bytes={start}-{end}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 206);
+    let body = r.bytes().await.unwrap();
+    assert_eq!(
+        body.as_ref(),
+        content::range(
+            content::seed_for("stubborn"),
+            start,
+            (end - start + 1) as usize
+        )
+        .as_slice()
+    );
+}
+
+#[tokio::test]
+async fn a_range_ignoring_origin_is_fetched_once_for_many_clients() {
+    // FR-32. Slice-level coalescing cannot help here - a full-object stream is not a slice fetch
+    // - so without object-level single-flight, thirty clients pull the whole object thirty times.
+    let h = Harness::start(
+        "m2-noranges-coalesce",
+        CdnConfig {
+            range_behaviour: RangeBehaviour::Ignore,
+            chunk_delay: Some(Duration::from_millis(15)),
+            ..CdnConfig::default()
+        },
+    )
+    .await;
+    let size = 4 * SLICE as u64;
+    let path = MockCdn::object_path("herd", size);
+
+    let mut handles = Vec::new();
+    for _ in 0..12 {
+        let client = h.client();
+        let url = format!("{}{}", h.server.base_url(), path);
+        let host = h.origin_host();
+        handles.push(tokio::spawn(async move {
+            let r = client
+                .get(url)
+                .header("host", host)
+                .header("range", "bytes=0-4095")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 206);
+            r.bytes().await.unwrap()
+        }));
+    }
+    let expected = content::range(content::seed_for("herd"), 0, 4096);
+    for handle in handles {
+        assert_eq!(handle.await.unwrap().as_ref(), expected.as_slice());
+    }
+
+    // One probe plus one full-object fetch is the floor. Without object-level single-flight this
+    // would be twelve full fetches of the object.
+    let bytes = h.origin.stats().bytes_served();
+    assert!(
+        bytes <= size * 2 + SLICE as u64,
+        "origin served {bytes} bytes for a {size}-byte object; the herd was not coalesced"
     );
 }
 

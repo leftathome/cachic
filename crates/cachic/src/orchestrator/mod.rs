@@ -16,6 +16,8 @@
 //!    bounded window, so per-connection memory is `readahead * slice_size` by construction rather
 //!    than by a limiter bolted on afterwards.
 
+pub mod filler;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -73,8 +75,8 @@ pub enum OrchestratorError {
         had: Option<String>,
         now: Option<String>,
     },
-    #[error("the object-level fill path is not implemented until TASK-16 (origin ignores Range)")]
-    NoRangesUnsupported,
+    #[error("filling {url}: {reason}")]
+    Fill { url: String, reason: String },
 }
 
 /// Shared orchestration state.
@@ -86,6 +88,8 @@ pub struct Orchestrator {
     readahead: usize,
     /// Per-object metadata single-flight. Without this, N concurrent clients probe N times.
     metadata: Mutex<HashMap<ObjectId, Arc<tokio::sync::OnceCell<ObjectMeta>>>>,
+    /// Object-level single-flight for origins that ignore `Range` (FR-32).
+    fills: filler::FillRegistry,
 }
 
 impl Orchestrator {
@@ -103,6 +107,7 @@ impl Orchestrator {
             slice_size,
             readahead: readahead.max(1),
             metadata: Mutex::new(HashMap::new()),
+            fills: filler::FillRegistry::new(),
         }
     }
 
@@ -221,10 +226,6 @@ impl Orchestrator {
             .metadata(key, object, url, headers, probe_index)
             .await?;
 
-        if meta.no_ranges {
-            return Err(OrchestratorError::NoRangesUnsupported);
-        }
-
         let wanted = match spec {
             None => match range::whole(meta.total_len) {
                 Some(r) => r,
@@ -283,6 +284,20 @@ impl Orchestrator {
         headers: HeaderMap,
         index: u32,
     ) -> Result<SliceValue, OrchestratorError> {
+        // A range-ignoring origin cannot serve one slice, so the whole object is filled once and
+        // this request waits only for the slice it needs (FR-13, FR-32).
+        if plan.meta.no_ranges {
+            self.ensure_filled(&plan, &url, &headers, index).await?;
+            let key = SliceKey::new(plan.object, plan.meta.generation, index);
+            return match self.store.get(&key).await? {
+                Some(value) => Ok(value),
+                None => Err(OrchestratorError::Fill {
+                    url,
+                    reason: format!("slice {index} was reported ready but is not in the store"),
+                }),
+            };
+        }
+
         let key = SliceKey::new(plan.object, plan.meta.generation, index);
         let extent = range::slice_extent(index, self.slice_size, plan.total_len);
         let upstream = self.upstream.clone();
@@ -313,6 +328,118 @@ impl Orchestrator {
             })
             .await
             .map_err(OrchestratorError::from)
+    }
+
+    /// Ensure slice `index` of a `no_ranges` object is readable, filling the object if nobody
+    /// else is (FR-13, FR-32).
+    ///
+    /// Exactly one caller streams the object and cuts it into slices, publishing readiness as
+    /// each lands. Everyone else waits on the slice they need, not on completion: on a 60 GB
+    /// object over a WAN link that difference is hours.
+    pub async fn ensure_filled(
+        self: &Arc<Self>,
+        plan: &Plan,
+        url: &str,
+        headers: &HeaderMap,
+        index: u32,
+    ) -> Result<(), OrchestratorError> {
+        // Already stored: nothing to wait for.
+        if self
+            .store
+            .contains(&SliceKey::new(plan.object, plan.meta.generation, index))
+        {
+            return Ok(());
+        }
+
+        match self.fills.claim(plan.object) {
+            filler::Role::Subscriber(rx) => {
+                filler::wait_for(rx, index)
+                    .await
+                    .map_err(|reason| OrchestratorError::Fill {
+                        url: url.to_owned(),
+                        reason,
+                    })
+            }
+            filler::Role::Filler(fill) => {
+                let result = self.run_fill(plan, url, headers, &fill).await;
+                // The registry entry is released whatever happens. Leaving it would make the
+                // object permanently unfillable after one failure.
+                self.fills.release(&plan.object);
+                match result {
+                    Ok(count) => {
+                        fill.complete(count);
+                        if index < count {
+                            Ok(())
+                        } else {
+                            Err(OrchestratorError::Fill {
+                                url: url.to_owned(),
+                                reason: format!(
+                                    "fill produced {count} slices; slice {index} was never reached"
+                                ),
+                            })
+                        }
+                    }
+                    Err(e) => {
+                        // Subscribers must be woken with the reason rather than left waiting.
+                        fill.fail(e.to_string());
+                        Err(e)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stream a whole object, cutting it into slices as it arrives.
+    ///
+    /// Memory is bounded to one slice plus whatever the HTTP client has buffered, which is the
+    /// point: these are the objects measured in tens of gigabytes.
+    async fn run_fill(
+        &self,
+        plan: &Plan,
+        url: &str,
+        headers: &HeaderMap,
+        fill: &Arc<filler::Fill>,
+    ) -> Result<u32, OrchestratorError> {
+        use futures_util::StreamExt;
+
+        let (_headers, stream) = self.upstream.fetch_stream(url, headers).await?;
+        futures_util::pin_mut!(stream);
+
+        let slice_size = self.slice_size as usize;
+        let header = header_for(&plan.meta, self.slice_size);
+        let mut buffer = bytes::BytesMut::with_capacity(slice_size);
+        let mut index = 0u32;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|source| {
+                OrchestratorError::Upstream(crate::upstream::client::UpstreamError::Request {
+                    url: url.to_owned(),
+                    source,
+                })
+            })?;
+            buffer.extend_from_slice(&chunk);
+            while buffer.len() >= slice_size {
+                let payload = buffer.split_to(slice_size).freeze();
+                self.store.insert(
+                    SliceKey::new(plan.object, plan.meta.generation, index),
+                    SliceValue::new(header.clone(), payload),
+                );
+                index += 1;
+                // Publish as each slice lands, so a waiter for slice 3 wakes at slice 3 rather
+                // than at the end of a 60 GB object.
+                fill.publish(index);
+            }
+        }
+        if !buffer.is_empty() {
+            self.store.insert(
+                SliceKey::new(plan.object, plan.meta.generation, index),
+                SliceValue::new(header, buffer.freeze()),
+            );
+            index += 1;
+            fill.publish(index);
+        }
+
+        Ok(index)
     }
 
     /// The slice indices a plan needs, in order.

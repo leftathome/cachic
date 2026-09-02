@@ -217,6 +217,64 @@ impl UpstreamClient {
         }
     }
 
+    /// Stream a whole object from an origin.
+    ///
+    /// Used for the `no_ranges` path (FR-13), where the origin ignores `Range` and returns the
+    /// entire body. The response is streamed rather than buffered: these objects are the ones
+    /// measured in tens of gigabytes, and buffering one would defeat the point of a slice store.
+    ///
+    /// The in-flight permit is *not* held for the life of the stream. A full-object fill can run
+    /// for hours, and holding a permit that long would let a handful of range-ignoring origins
+    /// starve every other fetch.
+    pub async fn fetch_stream(
+        &self,
+        url: &str,
+        headers: &HeaderMap,
+    ) -> Result<
+        (
+            HeaderMap,
+            impl futures_util::Stream<Item = reqwest::Result<Bytes>>,
+        ),
+        UpstreamError,
+    > {
+        self.check_url(url).await?;
+
+        let mut request = self.http.get(url);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|source| UpstreamError::Request {
+                url: url.to_owned(),
+                source,
+            })?;
+
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            return Err(UpstreamError::Redirect {
+                url: url.to_owned(),
+                location,
+            });
+        }
+        if !status.is_success() {
+            return Err(UpstreamError::Status {
+                url: url.to_owned(),
+                status,
+            });
+        }
+
+        let headers = response.headers().clone();
+        Ok((headers, response.bytes_stream()))
+    }
+
     pub fn available_permits(&self) -> usize {
         self.inflight.available_permits()
     }

@@ -42,7 +42,7 @@ so fibre users are covered without tuning.
 | [TASK-09](./TASK-09-proxy.md) | Proxy - server, router, headers, range parsing | Done |
 | [TASK-10](./TASK-10-upstream.md) | Upstream client, resolver and guards | Done |
 | [TASK-11](./TASK-11-store.md) | Store - foyer wrapper, slice codec, object index | Done |
-| [TASK-12](./TASK-12-orchestrator.md) | Orchestrator - probe, slice plan, pipeline | Done (no_ranges path is TASK-16) |
+| [TASK-12](./TASK-12-orchestrator.md) | Orchestrator - probe, slice plan, pipeline | Done |
 | [TASK-13](./TASK-13-telemetry.md) | Telemetry - logs, metrics, health | Done |
 | [TASK-14](./TASK-14-testkit.md) | Testkit - mockcdn, differ, load generator | Done |
 | [TASK-15](./TASK-15-packaging-v0.1.md) | Packaging v0.1 - image and compose | Done (glibc not musl; see Dockerfile) |
@@ -61,7 +61,7 @@ the reason and the one-line upstream fix are documented in the Dockerfile.
 
 | Task | Title | Status |
 |---|---|---|
-| [TASK-16](./TASK-16-no-ranges-filler.md) | no_ranges path and object-level filler | Not started |
+| [TASK-16](./TASK-16-no-ranges-filler.md) | no_ranges path and object-level filler | Done |
 | [TASK-17](./TASK-17-generations-stale-on-error.md) | Generations, stale-on-error, If-Range | Not started |
 | [TASK-18](./TASK-18-lifecycle-limits.md) | Disconnect semantics, graceful shutdown, limits | Not started |
 | [TASK-19](./TASK-19-admin-api.md) | Admin API and disk guard | Not started |
