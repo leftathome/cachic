@@ -23,13 +23,14 @@ wrong once costs every later task, so it goes first.
 ### Phase 3: Dev loop
 - [ ] `justfile` with `fmt`, `lint`, `test`, `bench`, `image`, `chart`, `spike`
 - [ ] `README.md` stub: what this is, status, how to build
-- [ ] `LICENSE` (see Technical Decisions)
+- [x] `LICENSE` - Apache-2.0, from the upstream repository
 
 ## Technical Decisions
 - One binary crate with modules, not a crate per module. Split only when a module needs an
   independent release cadence (plan section 2).
-- Licence: MIT or Apache-2.0 (dual) to stay compatible with the Rust ecosystem and with
-  `cargo deny`'s permissive-only policy. Confirm with the owner before committing.
+- Licence: Apache-2.0, as chosen by the owner when the GitHub repository was created. An earlier
+  draft of this task assumed the Rust convention of dual MIT/Apache-2.0; the repository is the
+  authority, not the convention.
 - `CARGO_TARGET_DIR` should point at native Linux storage when developing under WSL2; building on
   a `/mnt/c` DrvFs path is several times slower. Document in the README, do not hard-code.
 

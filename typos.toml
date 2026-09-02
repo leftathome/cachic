@@ -3,4 +3,4 @@
 lancache = "lancache"
 
 [files]
-extend-exclude = ["LICENSE-APACHE", ".agent/grafana/navigator-dashboard.json"]
+extend-exclude = ["LICENSE", ".agent/grafana/navigator-dashboard.json"]

@@ -42,4 +42,4 @@ The same applies to any cache data directory used for benchmarks.
 
 ## Licence
 
-MIT or Apache-2.0, at your option.
+[Apache License 2.0](LICENSE).
