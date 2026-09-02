@@ -4,4 +4,6 @@
 //! differential tester and load generator. Never linked into the shipped binary.
 
 pub mod content;
+pub mod differ;
+pub mod loadgen;
 pub mod mockcdn;

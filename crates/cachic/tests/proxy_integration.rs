@@ -23,6 +23,7 @@ use cachic::{
 };
 use cachic_testkit::{
     content,
+    differ::{self, Generator},
     mockcdn::{Config as CdnConfig, MockCdn},
 };
 
@@ -111,26 +112,6 @@ impl Harness {
     }
 }
 
-/// Deterministic RNG so a failure reproduces from the printed seed.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-    fn below(&mut self, n: u64) -> u64 {
-        if n == 0 {
-            0
-        } else {
-            self.next() % n
-        }
-    }
-}
-
 #[tokio::test]
 async fn serves_a_full_object_matching_the_origin() {
     let h = Harness::start("m1-full", CdnConfig::default()).await;
@@ -150,36 +131,29 @@ async fn serves_a_full_object_matching_the_origin() {
 
 #[tokio::test]
 async fn random_ranges_match_the_origin_cold_and_warm() {
+    // The correctness argument for the whole project. Cases are biased towards slice boundaries,
+    // where off-by-one errors live, and a failure shrinks to the first differing byte and prints
+    // a seed that reproduces it.
     let h = Harness::start("m1-diff", CdnConfig::default()).await;
     let seed = 0xD1FF_0000_1234_5678u64;
-    let mut rng = Rng(seed);
     let size = 5 * SLICE as u64 + 4_321;
+    let mut generator = Generator::new(seed, 5, size, SLICE as u64);
 
     for pass in 0..2 {
-        for iteration in 0..30 {
-            let name = format!("obj-{}", rng.below(5));
-            let path = MockCdn::object_path(&name, size);
-            let start = rng.below(size);
-            let len = 1 + rng.below(size - start);
-            let end = start + len - 1;
-
+        for _ in 0..30 {
+            let case = generator.next_case();
+            let path = MockCdn::object_path(&case.object, case.size);
             let response = h
                 .request(&path)
-                .header("range", format!("bytes={start}-{end}"))
+                .header("range", case.range_header())
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(
-                response.status(),
-                206,
-                "seed {seed:#x} pass {pass} iteration {iteration}"
-            );
+            assert_eq!(response.status(), 206, "pass {pass}: {case}");
             let body = response.bytes().await.unwrap();
-            assert_eq!(
-                body.as_ref(),
-                content::range(content::seed_for(&name), start, len as usize).as_slice(),
-                "seed {seed:#x} pass {pass} iteration {iteration}: {start}-{end} of {name}"
-            );
+            if let Err(mismatch) = differ::compare(seed, &case, &body) {
+                panic!("pass {pass}: {mismatch}");
+            }
         }
     }
 }
