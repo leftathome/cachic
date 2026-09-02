@@ -448,6 +448,76 @@ async fn if_range_falls_back_to_the_whole_object_on_a_mismatch() {
 }
 
 #[tokio::test]
+async fn scattered_ranges_do_not_trigger_speculative_prefetch() {
+    // The Windows Update and Blizzard shape: scattered ranges into a large file. Prefetching
+    // around each one would multiply upstream traffic for content nobody reads, and upstream
+    // amplification is the number the whole design is judged on.
+    let h = Harness::start("m4-random", CdnConfig::default()).await;
+    let size = 64 * SLICE as u64;
+    let path = MockCdn::object_path("scattered", size);
+
+    // Deliberately non-adjacent ranges, one slice each.
+    for slice in [3u64, 40, 12, 55, 7, 61] {
+        let start = slice * SLICE as u64;
+        let response = h
+            .request(&path)
+            .header("range", format!("bytes={start}-{}", start + 1023))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        let _ = response.bytes().await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // One probe plus one slice per request. Any prefetch would show up here immediately.
+    let upstream = h.origin.stats().requests();
+    assert!(
+        upstream <= 8,
+        "scattered ranges caused {upstream} upstream requests for 6 slices; \
+         speculative prefetch is firing on random access"
+    );
+}
+
+#[tokio::test]
+async fn a_streaming_client_prefetches_ahead() {
+    // The other half: a client clearly working through an object in order should have the next
+    // slices ready before it asks.
+    let h = Harness::start("m4-sequential", CdnConfig::default()).await;
+    let size = 32 * SLICE as u64;
+    let path = MockCdn::object_path("streamed", size);
+
+    // Four consecutive single-slice ranges: enough to cross the sequential threshold.
+    for slice in 0u64..4 {
+        let start = slice * SLICE as u64;
+        let response = h
+            .request(&path)
+            .header("range", format!("bytes={start}-{}", start + 1023))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        let _ = response.bytes().await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let key =
+        cachic::services::key::normalise("mock", &h.origin_host(), &path, &CompiledRule::default());
+    let object = key.object_id();
+    let ahead = (5..12)
+        .filter(|i| {
+            h.orchestrator
+                .store()
+                .contains(&cachic::store::slice::SliceKey::new(object, 0, *i))
+        })
+        .count();
+    assert!(
+        ahead > 0,
+        "a sequential client got no prefetch; slices ahead of the request were not fetched"
+    );
+}
+
+#[tokio::test]
 async fn an_unsatisfiable_range_is_416() {
     let h = Harness::start("m1-416", CdnConfig::default()).await;
     let size = 10_000u64;

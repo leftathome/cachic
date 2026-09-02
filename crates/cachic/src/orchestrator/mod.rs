@@ -17,6 +17,7 @@
 //!    than by a limiter bolted on afterwards.
 
 pub mod filler;
+pub mod readahead;
 pub mod validators;
 
 use std::{
@@ -91,6 +92,8 @@ pub struct Orchestrator {
     metadata: Mutex<HashMap<ObjectId, Arc<tokio::sync::OnceCell<ObjectMeta>>>>,
     /// Object-level single-flight for origins that ignore `Range` (FR-32).
     fills: filler::FillRegistry,
+    /// Speculative prefetch policy (FR-16). Only fires for clients that are clearly streaming.
+    readahead_policy: readahead::ReadaheadPolicy,
 }
 
 impl Orchestrator {
@@ -109,6 +112,7 @@ impl Orchestrator {
             readahead: readahead.max(1),
             metadata: Mutex::new(HashMap::new()),
             fills: filler::FillRegistry::new(),
+            readahead_policy: readahead::ReadaheadPolicy::new(readahead.max(1)),
         }
     }
 
@@ -535,6 +539,48 @@ impl Orchestrator {
         }
 
         Ok(index)
+    }
+
+    /// Speculatively fetch slices beyond a request, if the client is streaming (FR-16).
+    ///
+    /// Detached tasks: prefetch must never delay the response it is speculating on behalf of.
+    /// Slices already resident are skipped, so a warm object costs nothing.
+    ///
+    /// This is the only place cachic fetches bytes nobody asked for, which is why it is gated on
+    /// a demonstrated pattern rather than run for every request. Benchmark S4 measures upstream
+    /// amplification at exactly 1.00; a prefetch policy that worsens that for random-access
+    /// clients is not worth its throughput.
+    pub fn maybe_prefetch(self: &Arc<Self>, plan: &Plan, url: &str, headers: &HeaderMap) {
+        if plan.total_len == 0 || plan.meta.no_ranges {
+            return;
+        }
+        let span = range::plan(plan.wanted, self.slice_size);
+        let access = self
+            .readahead_policy
+            .observe(plan.object, span.first, span.last);
+        let last_slice =
+            ((plan.total_len - 1) / self.slice_size as u64).min(u32::MAX as u64) as u32;
+
+        for index in self
+            .readahead_policy
+            .prefetch(access, span.last, last_slice)
+        {
+            if self
+                .store
+                .contains(&SliceKey::new(plan.object, plan.meta.generation, index))
+            {
+                continue;
+            }
+            let orchestrator = self.clone();
+            let plan = plan.clone();
+            let url = url.to_owned();
+            let headers = headers.clone();
+            tokio::spawn(async move {
+                // Failures here are silent by design: nobody is waiting on a prefetch, and a
+                // speculative fetch that fails costs only the speculation.
+                let _ = orchestrator.slice(plan, url, headers, index).await;
+            });
+        }
     }
 
     /// The slice indices a plan needs, in order.

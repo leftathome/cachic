@@ -98,7 +98,7 @@ code.
 | Task | Title | Status |
 |---|---|---|
 | [TASK-27](./TASK-27-sni-passthrough.md) | SNI pass-through on 443 | Done |
-| [TASK-28](./TASK-28-readahead-tuning.md) | Read-ahead tuning | Not started |
+| [TASK-28](./TASK-28-readahead-tuning.md) | Read-ahead tuning | Done |
 | [TASK-29](./TASK-29-domain-auto-refresh.md) | cache-domains auto-refresh with hot reload | Not started |
 | [TASK-30](./TASK-30-grafana-dashboard.md) | Grafana dashboard | Not started |
 | [TASK-31](./TASK-31-service-rule-parity.md) | Per-service rule parity review | Not started |

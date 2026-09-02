@@ -441,6 +441,10 @@ async fn serve(
         return Ok(builder.body(empty()).unwrap());
     }
 
+    // Speculative prefetch, if this client is streaming. Fired before the body so the prefetch
+    // and the response race rather than queue.
+    orchestrator.maybe_prefetch(&plan, &url, &forwarded);
+
     let indices = orchestrator.indices(&plan);
     let readahead = orchestrator.readahead();
 
