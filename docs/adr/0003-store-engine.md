@@ -77,8 +77,12 @@ Three obligations follow, and they are not optional:
 1. **Expose `storage_queue_channel_overflow` and `storage_block_engine_enqueue_skip` through
    `/metrics`** (FR-50). A cache that silently declines to cache is the worst failure this product
    can have, and without these counters it is invisible. This is a TASK-13 requirement.
-2. **Respect the flusher's drain rate on the fill path.** Normal operation is far below the
-   threshold; prefill at LAN speed is the case that can approach it. TASK-20 should test it.
+2. **Do not ship foyer's defaults.** With 1 flusher and a 16 MiB buffer pool, a 10 Gbit fill
+   (1192 MiB/s) silently loses 10% of slices. Two flushers and a 64 MiB pool restore 100% at the
+   same rate; the device was never the limit. Below 5 Gbit the defaults are fine, but the primary
+   persona is a homelab on 10 GbE and fibre at 1-10 Gbit is now ordinary, so this is a mainstream
+   configuration rather than an edge case. Minimums belong in TASK-11 and the knobs in TASK-07.
+   Raising `submit_queue_size_threshold` alone does nothing - the drain rate is the constraint.
 3. **Do not benchmark at rates the product cannot generate.** The measurement harness should pace
    writes by default.
 
@@ -108,10 +112,11 @@ Proceed to TASK-11 with foyer, carrying the three obligations above.
 
 ## What would overturn this
 
-Evidence that the drop threshold is reachable in normal operation rather than only under
-synthetic load - most likely from prefill at LAN speed, or from a much faster upstream than the
-domestic line this was reasoned about. The `storage_queue_channel_overflow` metric is what would
-show it, which is why exposing it is an obligation rather than a suggestion.
+Evidence that the drop threshold is reachable even with the tuned settings above - a faster
+upstream than 10 Gbit, sustained multi-hour fills, or heavy concurrent read load competing for the
+same device. The `storage_queue_channel_overflow` metric is what would show it, which is why
+exposing it is an obligation rather than a suggestion. The 10 Gbit measurement was taken on a WSL2
+virtual disk over 512 MiB and should be repeated on the NUC.
 
 Independently: index cost at 381-463 bytes per entry is three times the incumbent's. If a
 deployment target appears where that is prohibitive, the trade is a larger slice size (ADR 0004)

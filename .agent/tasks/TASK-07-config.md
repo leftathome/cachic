@@ -12,6 +12,8 @@ before the store writes its first byte, or early cache directories become unopen
 - [ ] Size parsing with units (`64GiB`, `2t`, `1m`), duration parsing (`3560d`)
 - [ ] Reuse monolithic's env names where the meaning matches; document every divergence
 - [ ] Precedence: env > file > defaults
+- [ ] Store write-path tuning: flusher count and flush buffer pool size. foyer's defaults drop
+      10% of a 10 Gbit fill; these must be settable and must default well above foyer's (TASK-11)
 
 ### Phase 2: Rules file
 - [ ] Optional TOML for per-service rules

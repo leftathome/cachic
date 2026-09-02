@@ -22,6 +22,11 @@ rebuildable acceleration structure - a bug that inverts that relationship serves
       `CACHE_DISK_SIZE` on `CACHE_DATA_DIR`
 - [ ] Recency/frequency-aware eviction (S3-FIFO or LRU class), non-blocking on the serving path
 - [ ] Direct IO as a tunable, defaulted from TASK-04 findings
+- [ ] **Do not use foyer's defaults**: minimum 2 flushers and a 64 MiB buffer pool. With 1 flusher
+      and a 16 MiB pool, a 10 Gbit fill silently loses 10% of slices (docs/benchmarks/m0). Prefer
+      4 flushers and 128 MiB for headroom.
+- [ ] Surface `storage_queue_channel_overflow` and `storage_block_engine_enqueue_skip` so a cache
+      that has stopped caching is visible
 
 ### Phase 4: Object index
 - [ ] `redb` table `object_id -> {key, len, validators, gen, no_ranges, created, last_seen}`
@@ -47,3 +52,4 @@ rebuildable acceleration structure - a bug that inverts that relationship serves
 - [ ] Crash-safety test: kill mid-write, confirm no partial slice is readable
 - [ ] Index rebuild from slices alone, with the index file deleted
 - [ ] Eviction holds the cap under sustained write load without stalling reads
+- [ ] 100% of slices retained at a 10 Gbit fill rate (1192 MiB/s), asserted by a test
