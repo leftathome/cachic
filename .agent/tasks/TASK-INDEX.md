@@ -81,11 +81,17 @@ homelab and real clients, so it belongs with TASK-33.
 | [TASK-22](./TASK-22-helm-chart.md) | Helm chart | Done (kind install is CI's job) |
 | [TASK-23](./TASK-23-flux-k8s-docs.md) | Flux example and Kubernetes documentation | Done (Talos install needs the cluster) |
 | [TASK-24](./TASK-24-lancache-log-compat.md) | lancache access-log format and ecosystem compatibility | Done (LANCache Manager smoke test needs the tool) |
-| [TASK-25](./TASK-25-benchmark-harness.md) | Benchmark harness and parity report | Not started |
-| [TASK-26](./TASK-26-release-pipeline.md) | Release pipeline | Not started |
+| [TASK-25](./TASK-25-benchmark-harness.md) | Benchmark harness and parity report | Harness done; parity report needs the NUC |
+| [TASK-26](./TASK-26-release-pipeline.md) | Release pipeline | Done (untriggered; no tag pushed) |
 
 **Exit criteria**: chart installed on the Talos cluster via Flux with <= 10 values; benchmark
 report shows parity on every scenario.
+
+**Status: partially met.** The chart installs from seven values and its rendered manifests
+validate against the Kubernetes schema in CI, but it has not been applied to the Talos cluster.
+The benchmark harness runs all of S1-S6 and shows upstream amplification of exactly 1.00, but the
+parity comparison against monolithic needs the reference hardware. Both gaps are hardware, not
+code.
 
 ## M4 - v1.0 (weeks 13-16)
 

@@ -1,0 +1,24 @@
+# nextest configuration.
+
+[test-groups]
+# Tests that spawn the real binary and bind real ports. Running them concurrently races on port
+# assignment: the port is discovered by binding and releasing it, and another test can take it in
+# the window before the child binds. Serialising the group removes the race outright, at a cost of
+# a few seconds.
+#
+# The alternative - having the child bind port 0 and reporting the port back - is better in
+# principle but means parsing the port out of the child's log, which the access-log tests already
+# consume for their own assertions.
+spawns-binary = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(crash_recovery) or binary(access_log)'
+test-group = 'spawns-binary'
+# These start a process, wait for readiness and kill it. Slower than a unit test by design.
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.default.overrides]]
+# The performance gate measures throughput; anything else running alongside it is noise in the
+# measurement, and noise is one-sided.
+filter = 'binary(perf_gate)'
+test-group = 'spawns-binary'

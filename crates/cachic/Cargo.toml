@@ -51,6 +51,10 @@ name = "config-reference"
 path = "examples/config-reference.rs"
 
 [[example]]
+name = "bench"
+path = "examples/bench.rs"
+
+[[example]]
 name = "measure"
 path = "examples/measure.rs"
 

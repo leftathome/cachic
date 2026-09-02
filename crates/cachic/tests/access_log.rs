@@ -70,14 +70,21 @@ async fn capture_log(tag: &str, format: &str, http: u16, admin: u16) -> String {
             .expect("spawn cachic"),
     );
 
+    let mut ready = false;
     for _ in 0..100 {
         if let Ok(r) = reqwest::get(format!("http://127.0.0.1:{admin}/readyz")).await {
             if r.status() == 200 {
+                ready = true;
                 break;
             }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    assert!(
+        ready,
+        "cachic never became ready on port {admin}; most likely the port was taken between \
+         discovery and bind"
+    );
 
     let path = MockCdn::object_path("depot", 4096);
     let response = reqwest::Client::new()
@@ -107,9 +114,16 @@ async fn capture_log(tag: &str, format: &str, http: u16, admin: u16) -> String {
     buffer
 }
 
-fn ports(offset: u16) -> (u16, u16) {
-    let base = 22_000 + (std::process::id() % 1_000) as u16 + offset;
-    (base, base + 1)
+/// Two free ports, discovered rather than derived. See the note in `crash_recovery.rs`.
+fn ports(_offset: u16) -> (u16, u16) {
+    let take = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("no free port")
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    (take(), take())
 }
 
 #[tokio::test]

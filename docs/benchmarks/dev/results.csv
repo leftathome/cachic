@@ -1,0 +1,40 @@
+scenario,metric,value,unit,notes
+environment,hardware,AMD Ryzen 5 7600X 6-Core Processor,,every number below is only valid for this hardware
+environment,object_size,128,MiB,
+environment,slice_size,1,MiB,
+environment,clients,8,count,
+environment,memory_tier,512,MiB,
+S1,throughput,1.19,Gbps,warm; single client; whole object
+S1,throughput,142,MiB/s,
+S1,ttfb_p50,1.34,ms,
+S1,ttfb_p99,1.34,ms,
+S1,requests,1,count,
+S2,throughput,3.25,Gbps,warm; N clients; same object
+S2,throughput,388,MiB/s,
+S2,ttfb_p50,3.70,ms,
+S2,ttfb_p99,9.72,ms,
+S2,requests,8,count,
+S3,throughput,2.62,Gbps,warm; N clients; N distinct objects
+S3,throughput,312,MiB/s,
+S3,ttfb_p50,2.99,ms,
+S3,ttfb_p99,9.39,ms,
+S3,requests,8,count,
+S4,throughput,2.39,Gbps,cold fill; N clients; same object
+S4,throughput,285,MiB/s,
+S4,ttfb_p50,3.73,ms,
+S4,ttfb_p99,17.31,ms,
+S4,requests,8,count,
+S4,upstream_bytes,134217728,bytes,
+S4,upstream_amplification,1.00,ratio,1.0 is perfect coalescing; N would be none at all
+S5,throughput,2.44,Gbps,warm; N clients; 8 MiB ranges
+S5,throughput,291,MiB/s,
+S5,ttfb_p50,3.31,ms,
+S5,ttfb_p99,9.88,ms,
+S5,requests,8,count,
+S6,store_open,0.015,s,reopen a populated cache
+S6,time_to_first_hit,13.935,ms,
+S6,throughput,0.60,Gbps,after restart
+S6,throughput,72,MiB/s,
+S6,ttfb_p50,1.61,ms,
+S6,ttfb_p99,1.61,ms,
+S6,requests,1,count,

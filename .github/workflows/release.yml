@@ -1,0 +1,219 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build everything but publish nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  packages: write
+  # Required for cosign keyless signing.
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # Everything the branch gate checks, again, against the tag. A tag is not a branch and can point
+  # at a commit that never ran CI.
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo nextest run --all-features
+      - name: Performance gate
+        env:
+          CACHIC_PERF_FLOOR_GBPS: "0.4"
+          CACHIC_PERF_TARGET_GBPS: "1.0"
+        run: cargo nextest run --release --test perf_gate --no-capture
+
+  # Native runners per architecture rather than QEMU. A release build with LTO under emulation
+  # takes long enough to make releasing painful, and both architectures are available.
+  image:
+    name: Image (${{ matrix.arch }})
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: ${{ github.event_name == 'push' }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name == 'push' }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+      - name: Export digest
+        if: github.event_name == 'push'
+        # The digest is written as a filename so the manifest job can reassemble the list without
+        # needing to know how many architectures were built.
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  # One manifest list pointing at both per-architecture images, then signed.
+  manifest:
+    name: Manifest, signature and SBOM
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+      - name: Create the manifest list
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.meta.outputs.json }}') \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign keyless
+        # Keyless: there is no long-lived private key to protect or rotate.
+        run: |
+          for tag in $(jq -cr '.tags | join(" ")' <<< '${{ steps.meta.outputs.json }}'); do
+            cosign sign --yes "$tag"
+          done
+      - uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}:${{ github.ref_name }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: Attach the SBOM to the image
+        run: cosign attest --yes --predicate sbom.spdx.json --type spdxjson ${{ env.IMAGE }}:${{ github.ref_name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+  chart:
+    name: Chart
+    needs: verify
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Publish to the OCI registry
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # The chart version tracks the application version; a chart that lags its app is a
+          # support question waiting to happen.
+          helm package charts/cachic --version "$version" --app-version "$version"
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+          helm push "cachic-${version}.tgz" oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+
+  binaries:
+    name: Binaries (${{ matrix.target }})
+    needs: verify
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      # Not musl: foyer 0.22 does not compile for it. foyer-storage guards its macOS ioctl branch
+      # with cfg!(target_os = "macos") rather than #[cfg(...)], so the Darwin call is compiled on
+      # every unix target and only typechecks against glibc. See the Dockerfile.
+      - run: cargo build --release --target ${{ matrix.target }} --bin cachic
+      - name: Package
+        run: |
+          tar -czf "cachic-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" cachic
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: cachic-*.tar.gz
+
+  release:
+    name: GitHub release
+    needs: [manifest, chart, binaries]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{binary-*,sbom}"
+          path: /tmp/artifacts
+          merge-multiple: true
+      - name: Generate the changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: CHANGELOG.md
+          files: /tmp/artifacts/*
+          generate_release_notes: false

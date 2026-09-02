@@ -73,17 +73,47 @@ async fn wait_ready(admin_port: u16) -> bool {
     false
 }
 
-/// Ports unlikely to collide with anything else in the suite.
+/// Spawn and wait for readiness, retrying on fresh ports if the child could not bind.
+///
+/// Port discovery binds an ephemeral port and releases it, which leaves a window for another
+/// process to take it before the child does. Serialising these tests narrows that window but does
+/// not close it - anything else on the machine can claim a port too. Retrying closes it.
+async fn spawn_ready(
+    data_dir: &std::path::Path,
+    domains_dir: &std::path::Path,
+) -> (Process, u16, u16) {
+    for attempt in 0..5 {
+        let (http, admin) = ports();
+        let process = spawn(data_dir, domains_dir, http, admin);
+        if wait_ready(admin).await {
+            return (process, http, admin);
+        }
+        drop(process);
+        tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))).await;
+    }
+    panic!("cachic never became ready across five attempts");
+}
+
+/// Two free ports.
+///
+/// Discovered by binding ephemeral ports and releasing them, rather than derived from the process
+/// id. Derived ranges collide: this file and `access_log.rs` both spawn the binary, and their
+/// pid-derived ranges overlapped, so the suite failed only when run in parallel.
 fn ports() -> (u16, u16) {
-    let base = 21_000 + (std::process::id() % 2_000) as u16;
-    (base, base + 1)
+    let take = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("no free port")
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    (take(), take())
 }
 
 #[tokio::test]
 async fn the_cache_survives_sigkill_without_corruption() {
     let origin = MockCdn::start(CdnConfig::default()).await.unwrap();
     let scratch = tempdir();
-    let (http, admin) = ports();
     let size = 16 * 32 * 1024u64;
     let path = MockCdn::object_path("survivor", size);
     let expected = content::range(content::seed_for("survivor"), 0, size as usize);
@@ -91,13 +121,13 @@ async fn the_cache_survives_sigkill_without_corruption() {
         .timeout(Duration::from_secs(30))
         .build()
         .unwrap();
-    let url = format!("http://127.0.0.1:{http}{path}");
     let host = origin.addr().to_string();
 
     // Fill.
     let domains = write_domains(&scratch, &origin.addr().ip().to_string());
-    let mut process = spawn(&scratch, &domains, http, admin);
-    assert!(wait_ready(admin).await, "cachic did not become ready");
+    let (mut process, http, admin) = spawn_ready(&scratch, &domains).await;
+    let url = format!("http://127.0.0.1:{http}{path}");
+    let _ = admin;
     let first = client.get(&url).header("host", &host).send().await.unwrap();
     assert_eq!(first.status(), 200);
     assert_eq!(first.bytes().await.unwrap().as_ref(), expected.as_slice());
@@ -108,12 +138,10 @@ async fn the_cache_survives_sigkill_without_corruption() {
     drop(process);
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Restart against the same data directory.
-    let _restarted = spawn(&scratch, &domains, http, admin);
-    assert!(
-        wait_ready(admin).await,
-        "cachic did not come back after SIGKILL"
-    );
+    // Restart against the same data directory. A fresh port is fine: the test is about the data
+    // surviving, not about the address.
+    let (_restarted, http, _admin) = spawn_ready(&scratch, &domains).await;
+    let url = format!("http://127.0.0.1:{http}{path}");
 
     // Whatever survived, what it serves must be correct. Losing cache content to a hard kill is
     // a performance problem; serving wrong bytes is a correctness one, and only the second is
@@ -134,16 +162,10 @@ async fn a_crash_does_not_leave_the_cache_unopenable() {
     // The failure that turns a power cut into a manual recovery: a data directory the process
     // refuses to open on restart.
     let scratch = tempdir();
-    let (http, admin) = ports();
-    let (http, admin) = (http + 10, admin + 10);
     let domains = write_domains(&scratch, "127.0.0.1");
 
-    for attempt in 0..3 {
-        let mut process = spawn(&scratch, &domains, http, admin);
-        assert!(
-            wait_ready(admin).await,
-            "cachic failed to open the data directory on attempt {attempt}"
-        );
+    for _ in 0..3 {
+        let (mut process, _http, _admin) = spawn_ready(&scratch, &domains).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         process.kill();
         drop(process);
