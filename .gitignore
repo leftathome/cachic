@@ -36,3 +36,4 @@ target
 .agent/.features-shown-*
 fuzz/target
 fuzz/artifacts
+target/book

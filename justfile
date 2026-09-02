@@ -25,6 +25,15 @@ test-std:
 bench:
     cargo bench
 
+# Build the documentation site.
+book:
+    mdbook build
+    python3 scripts/check-book-links.py
+
+# Serve the documentation site locally.
+book-serve:
+    mdbook serve --open
+
 # Regenerate the configuration reference from the clap definitions (TASK-07).
 config-reference:
     cargo run --quiet --example config-reference > docs/configuration.md

@@ -1,0 +1,20 @@
+[book]
+title = "cachic"
+description = "HTTP caching proxy for game-distribution and OS-update CDN traffic"
+authors = ["Steven Wagner"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/book"
+# A dead link in documentation is a small betrayal: the reader trusted the link.
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/leftathome/cachic"
+edit-url-template = "https://github.com/leftathome/cachic/edit/main/{path}"
+default-theme = "rust"
+
+[output.html.fold]
+enable = true
+level = 1

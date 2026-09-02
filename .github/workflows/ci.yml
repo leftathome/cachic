@@ -17,6 +17,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   lint:
     name: Lint
@@ -113,6 +118,18 @@ jobs:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/
 
+  pages:
+    name: Publish docs
+    needs: docs
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
   chart:
     name: Helm chart
     runs-on: ubuntu-latest
@@ -160,3 +177,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: rustdoc
         run: cargo doc --no-deps --all-features
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+      - name: Build the book
+        run: mdbook build
+      - name: Check every SUMMARY entry actually built
+        # mdBook silently skips an entry pointing outside its source directory: the sidebar link
+        # renders and the page does not exist.
+        run: python3 scripts/check-book-links.py
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: target/book
