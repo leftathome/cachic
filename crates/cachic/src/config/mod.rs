@@ -99,6 +99,14 @@ pub struct Config {
     #[arg(long, env = "READAHEAD_SLICES", default_value_t = 4)]
     pub readahead_slices: usize,
 
+    /// Allow upstream fetches to private, loopback and link-local addresses.
+    ///
+    /// Off by default and should stay that way: without the guard, anyone on the LAN can point
+    /// the cache at a router's admin interface or a cloud metadata endpoint and have it fetch and
+    /// serve the result (FR-64). Turn it on only to cache from a deliberate internal mirror.
+    #[arg(long, env = "ALLOW_PRIVATE_UPSTREAMS", default_value_t = false)]
+    pub allow_private_upstreams: bool,
+
     /// Proxy hosts that match no service, instead of returning 404. Off by default: with it on
     /// and no allow-list, the cache is an open proxy on the LAN (FR-64).
     #[arg(long, env = "PASSTHROUGH_UNKNOWN_HOSTS", default_value_t = false)]
@@ -115,6 +123,14 @@ pub struct Config {
     /// How often to refresh the domain list. Zero disables refresh, for air-gapped installs.
     #[arg(long, env = "CACHE_DOMAINS_REFRESH", default_value = "24h", value_parser = parse_duration_arg)]
     pub cache_domains_refresh: Duration,
+
+    /// Load the domain list from this directory instead of the bundled snapshot.
+    ///
+    /// The directory must be laid out like `uklans/cache-domains`: a `cache_domains.json` naming
+    /// each service and the `.txt` files listing its hostnames. Useful for a custom service, for
+    /// an air-gapped site pinning its own copy, and for testing against a local origin.
+    #[arg(long, env = "CACHE_DOMAINS_DIR")]
+    pub cache_domains_dir: Option<PathBuf>,
 
     /// Optional TOML file of per-service rules.
     #[arg(long, env = "CACHE_RULES_FILE")]

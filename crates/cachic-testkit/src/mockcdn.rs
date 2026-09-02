@@ -34,6 +34,23 @@ use crate::content;
 /// Chunk size the origin streams bodies in.
 const STREAM_CHUNK: usize = 256 * 1024;
 
+/// How the origin misbehaves. Real CDNs do all of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Failure {
+    #[default]
+    None,
+    /// Answer with 503. The origin is up but refusing, which is the common transient case.
+    ServerError,
+    /// Accept the connection, send nothing, hold it open. The failure that hangs a client
+    /// forever if timeouts are missing.
+    Stall,
+    /// Send headers and part of the body, then close. A truncated response that looks
+    /// successful until the byte count is checked.
+    Truncate,
+    /// Close the connection without any response at all.
+    Reset,
+}
+
 /// How the origin responds to `Range` requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeBehaviour {
@@ -72,6 +89,9 @@ impl Stats {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub range_behaviour: RangeBehaviour,
+    /// How the origin fails. Changing it at runtime lets a test make an origin flaky partway
+    /// through, which is what actually happens in the field.
+    pub failure: Arc<std::sync::atomic::AtomicU8>,
     /// Appended to every ETag. Changing it at runtime simulates the object being replaced
     /// upstream, which is what forces a generation bump (FR-14).
     pub etag_suffix: Arc<std::sync::atomic::AtomicU64>,
@@ -85,6 +105,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             range_behaviour: RangeBehaviour::Honour,
+            failure: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             etag_suffix: Arc::new(AtomicU64::new(0)),
             first_byte_delay: None,
             chunk_delay: None,
@@ -98,6 +119,7 @@ pub struct MockCdn {
     stats: Arc<Stats>,
     shutdown: Arc<AtomicBool>,
     config_etag_suffix: Arc<AtomicU64>,
+    config_failure: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl MockCdn {
@@ -108,6 +130,7 @@ impl MockCdn {
         let stats = Arc::new(Stats::default());
         let shutdown = Arc::new(AtomicBool::new(false));
         let etag_suffix = config.etag_suffix.clone();
+        let failure = config.failure.clone();
 
         let task_stats = stats.clone();
         let task_shutdown = shutdown.clone();
@@ -142,6 +165,7 @@ impl MockCdn {
             stats,
             shutdown,
             config_etag_suffix: etag_suffix,
+            config_failure: failure,
         })
     }
 
@@ -151,6 +175,11 @@ impl MockCdn {
 
     pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    /// Make the origin start failing, or stop.
+    pub fn set_failure(&self, failure: Failure) {
+        self.config_failure.store(failure as u8, Ordering::Relaxed);
     }
 
     /// Replace every object's ETag, simulating the content being changed upstream.
@@ -238,6 +267,34 @@ async fn handle(
     config: Config,
 ) -> Result<Response<BoxedBody>, Infallible> {
     stats.requests.fetch_add(1, Ordering::Relaxed);
+
+    match config.failure.load(Ordering::Relaxed) {
+        1 => {
+            return Ok(Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .body(empty())
+                .unwrap())
+        }
+        2 => {
+            // Hold the request open. A client without timeouts waits here forever.
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+        3 | 4 => {
+            // Truncate and reset are both "the body ends early"; the difference is only whether
+            // any headers were sent, and hyper handles that for us when the stream errors.
+            let stream = async_stream::stream! {
+                if config.failure.load(Ordering::Relaxed) == 3 {
+                    yield Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"partial")));
+                }
+            };
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_LENGTH, "1000000")
+                .body(StreamBody::new(stream).boxed())
+                .unwrap());
+        }
+        _ => {}
+    }
 
     let (seed, size) = match parse_path(req.uri().path()) {
         Some(v) => v,

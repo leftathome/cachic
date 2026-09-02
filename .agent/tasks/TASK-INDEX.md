@@ -65,7 +65,7 @@ the reason and the one-line upstream fix are documented in the Dockerfile.
 | [TASK-17](./TASK-17-generations-stale-on-error.md) | Generations, stale-on-error, If-Range | Done |
 | [TASK-18](./TASK-18-lifecycle-limits.md) | Disconnect semantics, graceful shutdown, limits | Done |
 | [TASK-19](./TASK-19-admin-api.md) | Admin API and disk guard | Done (reload lands with TASK-29) |
-| [TASK-20](./TASK-20-chaos-suite.md) | Chaos suite | Not started |
+| [TASK-20](./TASK-20-chaos-suite.md) | Chaos suite | Done (cgroup IO throttling deferred to the compose profile) |
 | [TASK-21](./TASK-21-fuzzing.md) | Fuzzing in CI | Not started |
 
 **Exit criteria**: chaos suite green; 48-hour soak on the homelab with real clients.

@@ -25,9 +25,11 @@ Sizes accept nginx spellings (`1000g`, `2g`, `1m`) which are binary multiples, m
 | `UPSTREAM_DNS` | `--upstream-dns` | `1.1.1.1 1.0.0.1` | Resolvers used for upstream lookups. Never the system resolver: in a lancache deployment the system resolver is the one lying about CDN hostnames, and using it loops traffic back into this cache (FR-03) |
 | `UPSTREAM_MAX_INFLIGHT` | `--upstream-max-inflight` | `256` | Global cap on concurrent upstream fetches |
 | `READAHEAD_SLICES` | `--readahead-slices` | `4` | Prefetch this many slices ahead on sequential reads. Per-connection memory is this multiplied by the slice size (FR-16) |
+| `ALLOW_PRIVATE_UPSTREAMS` | `--allow-private-upstreams` | `false` | Allow upstream fetches to private, loopback and link-local addresses.  Off by default and should stay that way: without the guard, anyone on the LAN can point the cache at a router's admin interface or a cloud metadata endpoint and have it fetch and serve the result (FR-64). Turn it on only to cache from a deliberate internal mirror. |
 | `PASSTHROUGH_UNKNOWN_HOSTS` | `--passthrough-unknown-hosts` | `false` | Proxy hosts that match no service, instead of returning 404. Off by default: with it on and no allow-list, the cache is an open proxy on the LAN (FR-64) |
 | `CACHE_DOMAINS_REPO` | `--cache-domains-repo` | `https://github.com/uklans/cache-domains` |  |
 | `CACHE_DOMAINS_REFRESH` | `--cache-domains-refresh` | `24h` | How often to refresh the domain list. Zero disables refresh, for air-gapped installs |
+| `CACHE_DOMAINS_DIR` | `--cache-domains-dir` | - | Load the domain list from this directory instead of the bundled snapshot.  The directory must be laid out like `uklans/cache-domains`: a `cache_domains.json` naming each service and the `.txt` files listing its hostnames. Useful for a custom service, for an air-gapped site pinning its own copy, and for testing against a local origin. |
 | `CACHE_RULES_FILE` | `--rules-file` | - | Optional TOML file of per-service rules |
 | `LOG_FORMAT` | `--log-format` | `json` |  |
 | `LOG_LEVEL` | `--log-level` | `info` |  |

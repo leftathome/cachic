@@ -19,7 +19,7 @@ use cachic::{
     config::{units, Config},
     orchestrator::Orchestrator,
     proxy::server::{Server, ServerConfig},
-    services::{domains, key::CompiledRule, matcher::Matcher},
+    services::{domains, domains::DomainList, key::CompiledRule, matcher::Matcher},
     store::{hybrid::SliceStore, hybrid::StoreConfig, index::ObjectIndex},
     telemetry::{logs, metrics::Metrics},
     upstream::{
@@ -113,18 +113,40 @@ async fn run(config: Config) -> Result<(), Fatal> {
     );
     readiness.set_store_open(true);
     tracing::info!(dir = %config.cache_data_dir.display(), "store open");
+    if config.allow_private_upstreams {
+        // Loud, because this is the setting that turns the cache into an open proxy if it is on
+        // by accident.
+        tracing::warn!(
+            "ALLOW_PRIVATE_UPSTREAMS is on: the cache will fetch from private and loopback \
+             addresses. Do not enable this on an untrusted LAN."
+        );
+    }
 
-    let domain_list = domains::bundled()
-        .map_err(|e| Fatal::Unavailable(format!("the bundled domain list is unusable: {e}")))?;
+    let domain_list = match &config.cache_domains_dir {
+        Some(dir) => DomainList::load_dir(dir).map_err(|e| {
+            Fatal::Config(format!(
+                "cannot load the domain list from {}: {e}",
+                dir.display()
+            ))
+        })?,
+        None => domains::bundled()
+            .map_err(|e| Fatal::Unavailable(format!("the bundled domain list is unusable: {e}")))?,
+    };
     let matcher = Arc::new(Matcher::build(&domain_list));
     tracing::info!(
         services = matcher.service_count(),
         patterns = matcher.pattern_count(),
+        source = config
+            .cache_domains_dir
+            .as_ref()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "bundled".into()),
         "domain list loaded"
     );
 
     let resolver = Arc::new(
-        UpstreamResolver::new(&config.upstream_dns, false).map_err(|e| Fatal::Config(chain(&e)))?,
+        UpstreamResolver::new(&config.upstream_dns, config.allow_private_upstreams)
+            .map_err(|e| Fatal::Config(chain(&e)))?,
     );
     let upstream = UpstreamClient::new(
         resolver,
