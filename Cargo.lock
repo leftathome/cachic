@@ -201,6 +201,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bytes",
+ "cachic",
  "cachic-testkit",
  "clap",
  "dashmap",

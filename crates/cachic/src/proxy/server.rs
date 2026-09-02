@@ -1,0 +1,305 @@
+//! The client-facing HTTP server.
+//!
+//! Accepts requests for any `Host`, matches them to a service, and streams the answer out of the
+//! orchestrator.
+//!
+//! The body pipeline is where FR-31 is honoured. Each slice fetch is spawned as a detached task
+//! and the stream awaits its `JoinHandle`; dropping the stream when a client disconnects drops
+//! the handle, not the task, so the fill completes and the slice is stored. Awaiting the futures
+//! inline - which is what the M0 spike did - cancels them on drop and throws away work that a
+//! later client would have benefited from.
+
+use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+
+use bytes::Bytes;
+use futures_util::StreamExt;
+use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Full, StreamBody};
+use hyper::{
+    body::Frame,
+    header::{
+        HeaderValue, ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG,
+        LAST_MODIFIED, RANGE,
+    },
+    server::conn::http1,
+    service::service_fn,
+    Method, Request, Response, StatusCode,
+};
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
+
+use crate::{
+    config::rules::Rules,
+    orchestrator::{payload_window, Orchestrator, OrchestratorError},
+    proxy::{headers, heartbeat},
+    services::{
+        key::{self, CompiledRule},
+        matcher::Matcher,
+    },
+};
+
+/// Response bodies are unsync-boxed: foyer's `get_or_fetch` future is `!Sync`, so a body that
+/// awaits it cannot satisfy `BodyExt::boxed`'s `Sync` bound. hyper does not require `Sync` bodies.
+type BoxedBody = UnsyncBoxBody<Bytes, std::io::Error>;
+
+pub struct ServerConfig {
+    pub orchestrator: Arc<Orchestrator>,
+    pub matcher: Arc<Matcher>,
+    pub rules: Arc<Rules>,
+    pub compiled: Arc<std::collections::HashMap<String, CompiledRule>>,
+    pub hostname: String,
+    pub passthrough_unknown_hosts: bool,
+}
+
+pub struct Server {
+    addr: SocketAddr,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Server {
+    pub async fn bind(listen: SocketAddr, config: Arc<ServerConfig>) -> std::io::Result<Self> {
+        let listener = TcpListener::bind(listen).await?;
+        let addr = listener.local_addr()?;
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_shutdown = shutdown.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    r = listener.accept() => r,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                        if task_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                            return;
+                        }
+                        continue;
+                    }
+                };
+                let Ok((stream, _)) = accepted else { continue };
+                let io = TokioIo::new(stream);
+                let config = config.clone();
+                tokio::spawn(async move {
+                    let service = service_fn(move |req| handle(req, config.clone()));
+                    // Errors here are client disconnects; the proxy does not care.
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        });
+
+        Ok(Self { addr, shutdown })
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn empty() -> BoxedBody {
+    Full::new(Bytes::new())
+        .map_err(|e: Infallible| match e {})
+        .boxed_unsync()
+}
+
+fn text(status: StatusCode, message: &str) -> Response<BoxedBody> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(
+            Full::new(Bytes::from(message.to_owned()))
+                .map_err(|e: Infallible| match e {})
+                .boxed_unsync(),
+        )
+        .unwrap()
+}
+
+async fn handle(
+    req: Request<hyper::body::Incoming>,
+    config: Arc<ServerConfig>,
+) -> Result<Response<BoxedBody>, Infallible> {
+    match serve(req, config).await {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            tracing::warn!(error = %e, "request failed");
+            Ok(text(
+                StatusCode::BAD_GATEWAY,
+                &format!("upstream error: {e}\n"),
+            ))
+        }
+    }
+}
+
+async fn serve(
+    req: Request<hyper::body::Incoming>,
+    config: Arc<ServerConfig>,
+) -> Result<Response<BoxedBody>, OrchestratorError> {
+    let path = req.uri().path().to_owned();
+
+    if heartbeat::is_heartbeat(&path) {
+        return Ok(heartbeat::respond(Response::builder(), &config.hostname)
+            .body(empty())
+            .unwrap());
+    }
+
+    // Everything but GET and HEAD is proxied uncached; the cached path is GET and HEAD only
+    // (FR-05). Pass-through for other methods is TASK-18's concern.
+    if !matches!(*req.method(), Method::GET | Method::HEAD) {
+        return Ok(text(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "cachic caches GET and HEAD\n",
+        ));
+    }
+    let is_head = req.method() == Method::HEAD;
+
+    let host = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+
+    let Some(service) = config.matcher.service_for(&host) else {
+        // Unmatched hosts are 404 by default. Proxying them uncached would make this an open
+        // proxy on the LAN (FR-02, FR-64).
+        if config.passthrough_unknown_hosts {
+            return Ok(text(
+                StatusCode::NOT_IMPLEMENTED,
+                "passthrough is not implemented until TASK-18\n",
+            ));
+        }
+        return Ok(text(
+            StatusCode::NOT_FOUND,
+            "no cached service matches this host\n",
+        ));
+    };
+    let service = service.to_owned();
+
+    let default_rule = CompiledRule::default();
+    let rule = config.compiled.get(&service).unwrap_or(&default_rule);
+
+    let target = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or("/");
+
+    if !rule.is_cacheable(&path) {
+        return Ok(text(
+            StatusCode::NOT_IMPLEMENTED,
+            "uncached pass-through is not implemented until TASK-18\n",
+        ));
+    }
+
+    let cache_key = key::normalise(&service, &host, target, rule);
+    let scheme = if rule.upstream_https { "https" } else { "http" };
+    let url = format!("{scheme}://{host}{target}");
+    let forwarded = headers::forwarded_request_headers(req.headers());
+    let raw_range = req
+        .headers()
+        .get(RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    let orchestrator = config.orchestrator.clone();
+    let plan = match orchestrator
+        .plan(&cache_key, &url, &forwarded, raw_range.as_deref())
+        .await
+    {
+        Ok(plan) => plan,
+        Err(OrchestratorError::Unsatisfiable { total_len }) => {
+            return Ok(Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(CONTENT_RANGE, format!("bytes */{total_len}"))
+                .header("x-lancache-processed-by", config.hostname.clone())
+                .body(empty())
+                .unwrap());
+        }
+        Err(e) => return Err(e),
+    };
+
+    let body_len = if plan.total_len == 0 {
+        0
+    } else {
+        plan.wanted.len()
+    };
+
+    let mut builder = Response::builder()
+        .status(plan.status)
+        .header(CONTENT_LENGTH, body_len.to_string())
+        .header(ACCEPT_RANGES, "bytes")
+        .header("x-cache", plan.cache_status.as_str())
+        .header("x-lancache-processed-by", config.hostname.clone());
+    if plan.partial && plan.total_len > 0 {
+        builder = builder.header(
+            CONTENT_RANGE,
+            format!(
+                "bytes {}-{}/{}",
+                plan.wanted.start, plan.wanted.end, plan.total_len
+            ),
+        );
+    }
+    for (name, value) in [
+        (CONTENT_TYPE, plan.meta.content_type.clone()),
+        (ETAG, plan.meta.etag.clone()),
+        (LAST_MODIFIED, plan.meta.last_modified.clone()),
+    ] {
+        if let Some(v) = value.and_then(|v| HeaderValue::from_str(&v).ok()) {
+            builder = builder.header(name, v);
+        }
+    }
+
+    if is_head || body_len == 0 {
+        return Ok(builder.body(empty()).unwrap());
+    }
+
+    let indices = orchestrator.indices(&plan);
+    let readahead = orchestrator.readahead();
+
+    // Each slice is fetched by a detached task, so a client disconnect drops the JoinHandle
+    // rather than the fetch (FR-31). `buffered` preserves order and caps concurrency at the
+    // read-ahead window, so per-connection memory is bounded by construction.
+    let stream = futures_util::stream::iter(indices)
+        .map(move |index| {
+            let orchestrator = orchestrator.clone();
+            let plan = plan.clone();
+            let url = url.clone();
+            let forwarded = forwarded.clone();
+            let handle = tokio::spawn(async move {
+                let window = orchestrator.window(&plan, index);
+                let slice_url = url.clone();
+                let value = orchestrator
+                    .clone()
+                    .slice(plan, url, forwarded, index)
+                    .await?;
+                payload_window(&value, window).map_err(|_| OrchestratorError::ShortSlice {
+                    url: slice_url,
+                    index,
+                    expected: window.1.saturating_sub(window.0) as u64,
+                    actual: value.payload.len(),
+                })
+            });
+            async move {
+                match handle.await {
+                    Ok(Ok(bytes)) => Ok(bytes),
+                    Ok(Err(e)) => Err(std::io::Error::other(e.to_string())),
+                    // A panicked slice task must fail the response rather than truncate it: a
+                    // short body that looks successful is worse than an error.
+                    Err(join) => Err(std::io::Error::other(format!("slice task failed: {join}"))),
+                }
+            }
+        })
+        .buffered(readahead)
+        .map(|r| r.map(Frame::data));
+
+    Ok(builder
+        .body(BodyExt::boxed_unsync(StreamBody::new(stream)))
+        .unwrap())
+}

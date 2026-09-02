@@ -60,6 +60,7 @@ default = []
 test-support = []
 
 [dev-dependencies]
+cachic = { path = ".", features = ["test-support"] }
 cachic-testkit = { path = "../cachic-testkit" }
 reqwest.workspace = true
 tokio.workspace = true

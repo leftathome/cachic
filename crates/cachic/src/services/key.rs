@@ -25,6 +25,8 @@ use crate::{config::rules::ServiceRule, services::matcher::Matcher};
 pub struct CompiledRule {
     pub keep_query: bool,
     pub include_host: bool,
+    /// Fetch upstream over https regardless of the client's scheme.
+    pub upstream_https: bool,
     include: Option<RegexSet>,
     exclude: Option<RegexSet>,
 }
@@ -70,6 +72,7 @@ impl CompiledRule {
         Ok(Self {
             keep_query: rule.keep_query,
             include_host: rule.include_host,
+            upstream_https: rule.upstream_https,
             include: build(&rule.include_paths, "include_paths")?,
             exclude: build(&rule.exclude_paths, "exclude_paths")?,
         })
