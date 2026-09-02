@@ -29,16 +29,21 @@ What M0 demonstrated:
   decode. Nothing in our own code is near being a bottleneck.
 - End-to-end throughput was bounded by the HTTP and copy path, not by the store.
 
-The reuse argument is weaker than it was, because the library we were reusing did not hold up (see
-ADR 0003). But the language decision does not rest on it: the cost of the Go alternative was always
-the store, and if we end up writing a store either way, Rust's other properties - no GC pauses on
-GB/s of 1 MiB buffers, `Bytes` for zero-copy fan-out, static musl binaries - are what remain.
+The reuse argument is not as clean as it was, because foyer does not cover restart recovery (ADR
+0003). It is not gone: foyer's coalescing satisfies FR-30 end to end and is not trivial to rebuild,
+and ADR 0003's likeliest outcomes keep foyer. The language decision does not rest on it either way -
+no GC pauses on GB/s of 1 MiB buffers, `Bytes` for zero-copy fan-out and static musl binaries are
+what carried it.
 
 The contributor-pool concern from the plan stands and is not answered by M0.
 
 ## What would overturn this
 
-If ADR 0003 concludes we must write our own store, the Go comparison changes: the store cost
-becomes common to both, and Go's larger contributor pool in the lancache community plus
-`sendfile` on disk-tier hits become the deciding arguments. Revisit ADR 0001 at that point rather
-than treating it as settled.
+If ADR 0003 ends at its option 4 - writing a store from scratch - then the store cost becomes
+common to both languages and Go's larger contributor pool in the lancache community plus
+`sendfile` on disk-tier hits become live arguments again.
+
+That is a narrow condition and it is not where ADR 0003 currently points. It also must not be
+acted on from the armchair: plan section 0.1's claim that Go has no equivalent library is
+inherited and unverified, and no survey of either ecosystem has been done. Reopening this ADR
+requires that survey first, not a preference.

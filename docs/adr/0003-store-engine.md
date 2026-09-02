@@ -1,6 +1,7 @@
 # 0003. Store engine and object index
 
-- **Status**: **Provisional.** The chosen engine has a defect that blocks a P0 requirement.
+- **Status**: **Provisional.** The chosen engine does not meet a P0 requirement, most likely
+  because that requirement is outside what it is built for.
 - **Date**: 2026-09-01
 - **Context**: M0 (TASK-03, TASK-04), plan section 1.3, plan section 10
 
@@ -64,24 +65,47 @@ independent of the recovery defect and applies to any decision to keep foyer.
 
 ## Options
 
-1. **File upstream and wait.** Cheapest if foyer fixes it. Unknown latency, and M1's store task is
-   blocked meanwhile.
-2. **File upstream and carry a patch.** Viable only once the root cause is understood, which
-   requires reading foyer's block engine and recovery scanner.
-3. **Fall back to the plan's own design**: per-object sparse files plus a bitmap sidecar, redb for
-   the index. Costed at about two weeks. The `Store` trait boundary means nothing above the store
-   changes, which is exactly why that boundary was drawn.
+Listed cheapest first. None of these is "write a cache engine in another language"; that is not on
+the table and was never proposed.
 
-The self-describing slice format means option 3 is not a rewrite of the interesting logic. It also
-means recovery is tractable by construction: the slices on disk carry everything needed.
+1. **Engage foyer upstream.** Ask whether restart recovery is in scope, what `RecoverMode::Strict`
+   surfaces, and what it would take. This is a design conversation with a maintainer, not a bug
+   report, and foyer has real momentum and an active maintainer. It is also how the project's
+   reuse goal (G5, "contribute back") is meant to work. Carries `foyerprobe` as the reproducer.
+2. **Keep foyer for what it is good at; own the durable tier.** foyer's coalescing is excellent -
+   it satisfies FR-30 end to end, one upstream fetch per slice, verified - and its memory tier is
+   effectively free. Neither is trivial to rebuild. A hybrid where foyer serves as the RAM tier and
+   single-flight mechanism, over a disk tier we own, keeps most of the reuse benefit. Our slices
+   are already self-describing precisely so an index can be rebuilt by scanning them (FR-44).
+3. **Contribute the recovery path upstream.** Strictly better than carrying a patch if the
+   maintainer wants it; requires reading foyer's block engine and recovery scanner first.
+4. **Fall back to the plan's own design**: per-object sparse files plus a bitmap sidecar, redb for
+   the index, in Rust. Costed at about two weeks in plan section 10. This is the last resort, not
+   the expected outcome.
+
+The `Store` trait boundary means nothing above the store changes under any of these, which is
+exactly why the plan drew that boundary.
+
+## What has not been done
+
+**No survey of alternative stores has been carried out, in Rust or in Go.** The plan named foyer,
+and M0 measured foyer. Plan section 0.1 asserts that Go has "no equivalent" and that a custom store
+there costs 3-5 weeks; that assertion is inherited, not verified. Before option 4 is chosen - and
+before ADR 0001 is reopened on language grounds - that survey has to happen, covering at minimum
+the Rust hybrid-cache and embedded-store landscape and the Go equivalents.
 
 ## Next action
 
-File both defects upstream with `foyerprobe` as the reproducer. Decide between the options on the
-upstream response. Do not start TASK-11 until this is resolved - it is the task that would have to
-be redone.
+Open the conversation with foyer upstream, carrying `foyerprobe`. In parallel, run the store
+survey that M0 skipped. Do not start TASK-11 until this is resolved - it is the task that would
+have to be redone.
 
 ## What would overturn this
 
-A foyer release, or a configuration we have not found, that recovers 100% of written entries
-across a clean restart and does not hang on close. That would move this ADR to Accepted unchanged.
+A foyer release, or a configuration we have not found, that recovers written entries across a
+clean restart and does not hang on close. That would move this ADR to Accepted unchanged.
+
+Conversely, evidence that FR-43 is softer than written - that operators tolerate a cold cache after
+a restart - would dissolve the problem entirely. That is worth asking before engineering around it:
+the requirement is ours to set. On a 2 TB cache filled over a domestic connection, refilling is
+measured in days, which is why it was made P0 in the first place.
