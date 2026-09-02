@@ -48,7 +48,15 @@ foyerprobe:
     cargo run --release --example foyerprobe
 
 image:
-    docker build -t cachic:dev .
+    docker build -t cachic:dev -f Dockerfile .
+
+# Run the built image and check it answers. Podman's CNI networking is unreliable under WSL2,
+# hence --network=host.
+image-smoke: image
+    docker run --rm -d --name cachic-smoke --network=host -e HTTP_PORT=18081 -e ADMIN_PORT=19091 -e CACHE_DATA_DIR=/tmp/cachic -e CACHE_DISK_SIZE=1g -e CACHE_MEM_SIZE=64m cachic:dev
+    sleep 8
+    curl -sf http://127.0.0.1:19091/readyz
+    docker rm -f cachic-smoke
 
 chart:
     helm lint charts/cachic

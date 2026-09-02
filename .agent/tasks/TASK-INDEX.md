@@ -45,10 +45,17 @@ so fibre users are covered without tuning.
 | [TASK-12](./TASK-12-orchestrator.md) | Orchestrator - probe, slice plan, pipeline | Done (no_ranges path is TASK-16) |
 | [TASK-13](./TASK-13-telemetry.md) | Telemetry - logs, metrics, health | Done |
 | [TASK-14](./TASK-14-testkit.md) | Testkit - mockcdn, differ, load generator | Done |
-| [TASK-15](./TASK-15-packaging-v0.1.md) | Packaging v0.1 - image and compose | Not started |
+| [TASK-15](./TASK-15-packaging-v0.1.md) | Packaging v0.1 - image and compose | Done (glibc not musl; see Dockerfile) |
 
 **Exit criteria**: SteamPrefill and Epic prefill complete through the proxy; differential tests
 pass; image runs as non-root on amd64 and arm64.
+
+**Status: substantially met.** Differential tests pass over random objects and ranges, cold and
+warm. The image runs as non-root on amd64 and is 13.2 MB compressed, well inside NFR-8's 40 MB.
+Two gaps: arm64 has not been built here (TASK-26 sets up the multi-arch pipeline), and the prefill
+runs need real credentials and a client, so they belong with TASK-33. Packaging deviates from the
+plan by building against glibc rather than static musl - foyer 0.22.4 does not compile for musl;
+the reason and the one-line upstream fix are documented in the Dockerfile.
 
 ## M2 - Robustness, v0.2 (weeks 7-9)
 

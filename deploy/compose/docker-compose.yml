@@ -1,0 +1,57 @@
+# cachic quickstart, mirroring the lancache compose layout.
+#
+# Two containers: a DNS server that answers CDN hostnames with the cache's address, and the cache
+# itself. Point your clients' DNS at LANCACHE_IP and they will use the cache with no client-side
+# configuration.
+#
+# The cache must NOT use the DNS server below for its own upstream lookups, or every fetch loops
+# straight back into the cache. cachic resolves upstreams through UPSTREAM_DNS and never the
+# system resolver, so this is safe by construction rather than by configuration.
+
+services:
+  dns:
+    image: lancachenet/lancache-dns:latest
+    restart: unless-stopped
+    environment:
+      # The address clients should be sent to for cached CDN hostnames.
+      LANCACHE_IP: ${LANCACHE_IP:?set LANCACHE_IP to this host's LAN address}
+      # Where the DNS server forwards everything it does not intercept.
+      UPSTREAM_DNS: ${UPSTREAM_DNS:-1.1.1.1}
+    ports:
+      - "${DNS_BIND_IP:-0.0.0.0}:53:53/udp"
+      - "${DNS_BIND_IP:-0.0.0.0}:53:53/tcp"
+
+  cache:
+    image: ${CACHIC_IMAGE:-ghcr.io/leftathome/cachic:latest}
+    restart: unless-stopped
+    environment:
+      CACHE_DISK_SIZE: ${CACHE_DISK_SIZE:-1000g}
+      CACHE_MEM_SIZE: ${CACHE_MEM_SIZE:-2g}
+      CACHE_MAX_AGE: ${CACHE_MAX_AGE:-3560d}
+      CACHE_SLICE_SIZE: ${CACHE_SLICE_SIZE:-1m}
+      MIN_FREE_DISK: ${MIN_FREE_DISK:-10g}
+      # Public resolvers, deliberately not the dns service above.
+      UPSTREAM_DNS: ${UPSTREAM_DNS:-1.1.1.1 1.0.0.1}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - cache-data:/data/cache
+    ports:
+      - "${CACHE_BIND_IP:-0.0.0.0}:80:80"
+      - "${CACHE_BIND_IP:-0.0.0.0}:443:443"
+      # Admin port stays on loopback: it carries purge and drain.
+      - "127.0.0.1:9090:9090"
+    cap_add:
+      # Required to bind 80 and 443 as a non-root user.
+      - NET_BIND_SERVICE
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # The image is distroless and has no shell or curl, so the healthcheck is expressed here
+      # for orchestrators that can perform an HTTP probe. Kubernetes uses the Helm chart's
+      # httpGet probes against /healthz and /readyz instead.
+      disable: true
+
+volumes:
+  cache-data:

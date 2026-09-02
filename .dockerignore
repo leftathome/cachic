@@ -1,0 +1,6 @@
+target/
+.git/
+.agent/
+docs/
+*.md
+!README.md

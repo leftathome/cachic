@@ -13,7 +13,11 @@ it gets done deliberately rather than under tag-day pressure.
 - [ ] SemVer with a written stability policy for env vars and the admin API
 
 ### Phase 2: Artefacts
-- [ ] Binaries via `cargo-dist`: linux amd64/arm64 musl, macOS
+- [ ] Binaries via `cargo-dist`: linux amd64/arm64, macOS. **Not musl**: foyer 0.22.4 fails to
+      compile for musl because `foyer-storage` guards its macOS `ioctl` branch with
+      `cfg!(target_os = "macos")` rather than `#[cfg(...)]`, so the Darwin call is compiled on
+      every unix target and only typechecks against glibc. The upstream fix is one line. Until it
+      lands, FR-73's static musl binaries are blocked and the image uses distroless/cc.
 - [ ] Multi-arch images via `docker buildx`; prefer native runners per arch over QEMU
 - [ ] Tags: `vX.Y.Z`, `vX.Y`, `latest`, `sha-...`
 
