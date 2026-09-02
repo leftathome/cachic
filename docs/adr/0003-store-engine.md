@@ -53,7 +53,7 @@ a restart, which cannot separate "dropped on write" from "not recovered"; counti
 the close, shows the two numbers match and recovery was never at fault. A large memory tier made
 it worse by masking the drops behind RAM hits until a restart exposed them.
 
-Full detail in `docs/benchmarks/m0/README.md`. `cargo run --release --bin foyerprobe` reproduces
+Full detail in `docs/benchmarks/m0/README.md`. `cargo run --release --example foyerprobe` reproduces
 the whole sweep.
 
 **This is worth recording rather than quietly deleting**, because the failure mode generalises: a

@@ -34,16 +34,16 @@ measures the Windows filesystem bridge and is meaningless.
 ## Reproducing
 
 ```sh
-cargo build --release --bin measure --features measure
+cargo build --release --example measure
 
-measure --dir /var/tmp/cachic codec        --slice-mib 1 --iterations 512
-measure --dir /var/tmp/cachic store        --slice-mib 1 --entries 512 --mem-mib 2048 --disk-mib 4096 --block-mib 64
-measure --dir /var/tmp/cachic store        --slice-mib 1 --entries 512 --mem-mib 64   --disk-mib 4096 --block-mib 64
-measure --dir /var/tmp/cachic --direct store --slice-mib 1 --entries 512 --mem-mib 64 --disk-mib 4096 --block-mib 64
-measure --dir /var/tmp/cachic index-memory --entries 100000,1000000
-measure --dir /var/tmp/cachic recovery     --slice-mib 1 --entries 512
-measure --dir /var/tmp/cachic proxy        --clients 8 --object-mib 256 --slice-mib 1 --mem-mib 1024 --rounds 3
-measure --dir /var/tmp/cachic proxy        --clients 8 --object-mib 256 --slice-mib 1 --mem-mib 32   --rounds 2
+cargo run --release --example measure -- --dir /var/tmp/cachic codec        --slice-mib 1 --iterations 512
+cargo run --release --example measure -- --dir /var/tmp/cachic store        --slice-mib 1 --entries 512 --mem-mib 2048 --disk-mib 4096 --block-mib 64
+cargo run --release --example measure -- --dir /var/tmp/cachic store        --slice-mib 1 --entries 512 --mem-mib 64   --disk-mib 4096 --block-mib 64
+cargo run --release --example measure -- --dir /var/tmp/cachic --direct store --slice-mib 1 --entries 512 --mem-mib 64 --disk-mib 4096 --block-mib 64
+cargo run --release --example measure -- --dir /var/tmp/cachic index-memory --entries 100000,1000000
+cargo run --release --example measure -- --dir /var/tmp/cachic recovery     --slice-mib 1 --entries 512
+cargo run --release --example measure -- --dir /var/tmp/cachic proxy        --clients 8 --object-mib 256 --slice-mib 1 --mem-mib 1024 --rounds 3
+cargo run --release --example measure -- --dir /var/tmp/cachic proxy        --clients 8 --object-mib 256 --slice-mib 1 --mem-mib 32   --rounds 2
 ```
 
 Raw output is in `results.csv`.

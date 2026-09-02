@@ -35,7 +35,7 @@ impl ByteRange {
 /// Why a `Range` header did not yield a single satisfiable range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeError {
-    /// Not a `bytes=` range, or otherwise unparseable. Per RFC 9110 an unparseable Range header
+    /// Not a `bytes=` range, or otherwise not valid. Per RFC 9110 a Range header that cannot be parsed
     /// is ignored and the full object is returned.
     Malformed,
     /// More than one range. RFC 9110 permits answering with the full object, which is what

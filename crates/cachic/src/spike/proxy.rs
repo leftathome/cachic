@@ -282,7 +282,7 @@ async fn serve(
     let spec = match raw_range.as_deref().map(range::parse_range) {
         None => None,
         Some(Ok(spec)) => Some(spec),
-        // RFC 9110: an unparseable Range is ignored, and multi-range may be answered in full.
+        // RFC 9110: a Range that cannot be parsed is ignored, and multi-range may be answered in full.
         Some(Err(RangeError::Malformed | RangeError::Multiple)) => None,
         Some(Err(RangeError::Unsatisfiable)) => unreachable!("parse never yields Unsatisfiable"),
     };

@@ -36,7 +36,11 @@ spike *ARGS:
 
 # M0 measurements (TASK-04).
 measure *ARGS:
-    cargo run --release --bin measure -- {{ARGS}}
+    cargo run --release --example measure -- {{ARGS}}
+
+# foyer ingest-rate probe (TASK-04 follow-up).
+foyerprobe:
+    cargo run --release --example foyerprobe
 
 image:
     docker build -t cachic:dev .

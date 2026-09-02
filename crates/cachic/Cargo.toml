@@ -25,8 +25,6 @@ reqwest.workspace = true
 dashmap.workspace = true
 clap.workspace = true
 
-# The measurement harness uses the testkit's mock origin, so it is a normal dependency of that
-# binary only. Cargo has no per-binary deps, so it is declared here and gated by the bin target.
 [[bin]]
 name = "cachic"
 path = "src/main.rs"
@@ -35,22 +33,16 @@ path = "src/main.rs"
 name = "spike"
 path = "src/bin/spike.rs"
 
-[[bin]]
-name = "foyerprobe"
-path = "src/bin/foyerprobe.rs"
-
-[[bin]]
+# The measurement harness and the foyer probe need the testkit's mock origin. They live as
+# examples rather than binaries so that dependency stays a dev-dependency: a publishable crate
+# cannot carry a path dependency, and the testkit is deliberately unpublishable.
+[[example]]
 name = "measure"
-path = "src/bin/measure.rs"
-required-features = ["measure"]
+path = "examples/measure.rs"
 
-[features]
-default = []
-measure = ["dep:cachic-testkit"]
-
-[dependencies.cachic-testkit]
-path = "../cachic-testkit"
-optional = true
+[[example]]
+name = "foyerprobe"
+path = "examples/foyerprobe.rs"
 
 [dev-dependencies]
 cachic-testkit = { path = "../cachic-testkit" }
