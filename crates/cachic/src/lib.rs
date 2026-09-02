@@ -13,6 +13,9 @@ pub mod sni;
 pub mod spike;
 pub mod store;
 pub mod telemetry;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod upstream;
 
 /// The crate version, as printed by `cachic --version`.

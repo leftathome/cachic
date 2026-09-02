@@ -37,7 +37,7 @@ so fibre users are covered without tuning.
 
 | Task | Title | Status |
 |---|---|---|
-| [TASK-07](./TASK-07-config.md) | Configuration surface | Not started |
+| [TASK-07](./TASK-07-config.md) | Configuration surface | Done |
 | [TASK-08](./TASK-08-services.md) | Services - cache-domains, matcher, key normalisation | Not started |
 | [TASK-09](./TASK-09-proxy.md) | Proxy - server, router, headers, range parsing | Not started |
 | [TASK-10](./TASK-10-upstream.md) | Upstream client, resolver and guards | Not started |

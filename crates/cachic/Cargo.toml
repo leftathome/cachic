@@ -24,6 +24,8 @@ xxhash-rust.workspace = true
 reqwest.workspace = true
 dashmap.workspace = true
 clap.workspace = true
+serde.workspace = true
+toml.workspace = true
 
 [[bin]]
 name = "cachic"
@@ -37,12 +39,21 @@ path = "src/bin/spike.rs"
 # examples rather than binaries so that dependency stays a dev-dependency: a publishable crate
 # cannot carry a path dependency, and the testkit is deliberately unpublishable.
 [[example]]
+name = "config-reference"
+path = "examples/config-reference.rs"
+
+[[example]]
 name = "measure"
 path = "examples/measure.rs"
 
 [[example]]
 name = "foyerprobe"
 path = "examples/foyerprobe.rs"
+
+[features]
+default = []
+# Exposes test helpers to integration tests and other crates' tests.
+test-support = []
 
 [dev-dependencies]
 cachic-testkit = { path = "../cachic-testkit" }

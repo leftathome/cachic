@@ -24,6 +24,10 @@ test-std:
 bench:
     cargo bench
 
+# Regenerate the configuration reference from the clap definitions (TASK-07).
+config-reference:
+    cargo run --quiet --example config-reference > docs/configuration.md
+
 # Performance gate. Release only: debug builds measure ~20% low and the thresholds assume
 # optimised code. Floor is a hard failure, target is a loud warning.
 # Override per host with CACHIC_PERF_FLOOR_GBPS / CACHIC_PERF_TARGET_GBPS.
