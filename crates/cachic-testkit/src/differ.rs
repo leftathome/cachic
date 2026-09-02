@@ -56,6 +56,8 @@ impl Case {
         self.end - self.start + 1
     }
 
+    /// Always false: a case covers at least one byte by construction, since `end` is inclusive
+    /// and never less than `start`. Present because `len` without `is_empty` is a lint.
     pub fn is_empty(&self) -> bool {
         false
     }
@@ -254,7 +256,7 @@ mod tests {
             let c = g.next_case();
             assert!(c.start <= c.end, "{c}");
             assert!(c.end < c.size, "{c} runs past the end");
-            assert!(c.len() >= 1);
+            assert!(!c.is_empty());
         }
     }
 
