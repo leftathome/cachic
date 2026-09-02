@@ -14,3 +14,4 @@ overturn it; a decision with no falsifier is a preference, not a decision.
 | [0006](./0006-hosting-and-ci.md) | Repository hosting and CI topology | Accepted |
 | [0007](./0007-access-log-compatibility.md) | Access-log compatibility with lancache tooling | Accepted |
 | [0008](./0008-security-posture.md) | Security posture | Accepted |
+| [0009](./0009-performance-floor.md) | Performance floor standard | Accepted |

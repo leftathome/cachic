@@ -24,6 +24,12 @@ test-std:
 bench:
     cargo bench
 
+# Performance gate. Release only: debug builds measure ~20% low and the thresholds assume
+# optimised code. Floor is a hard failure, target is a loud warning.
+# Override per host with CACHIC_PERF_FLOOR_GBPS / CACHIC_PERF_TARGET_GBPS.
+perf:
+    cargo nextest run --release --test perf_gate --no-capture
+
 # M0 spike: prototype proxy over mockcdn (TASK-03).
 spike *ARGS:
     cargo run --release --bin spike -- {{ARGS}}
@@ -38,4 +44,4 @@ image:
 chart:
     helm lint charts/cachic
 
-check: lint test
+check: lint test perf

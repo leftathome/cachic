@@ -40,6 +40,23 @@ jobs:
       - name: Test
         run: cargo nextest run --all-features
 
+  perf:
+    name: Performance gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Warm hit throughput
+        # Shared CI runners are slower and noisier than a benchmark host, so the floor here is a
+        # catastrophic-regression backstop rather than the real nginx-parity floor. A dedicated
+        # runner should raise both to the measured figures from TASK-25.
+        env:
+          CACHIC_PERF_FLOOR_GBPS: "0.4"
+          CACHIC_PERF_TARGET_GBPS: "1.0"
+        run: cargo nextest run --release --test perf_gate --no-capture
+
   deny:
     name: Supply chain
     runs-on: ubuntu-latest

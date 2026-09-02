@@ -106,9 +106,7 @@ async fn trial(t: Trial) -> Outcome {
             // Pace against the wall clock rather than sleeping a fixed amount per entry, so the
             // achieved rate tracks the target even when an individual insert stalls.
             if let Some(target) = t.target_mibs {
-                let due = Duration::from_secs_f64(
-                    (i * t.entry_kib) as f64 / 1024.0 / target,
-                );
+                let due = Duration::from_secs_f64((i * t.entry_kib) as f64 / 1024.0 / target);
                 let elapsed = start.elapsed();
                 if due > elapsed {
                     tokio::time::sleep(due - elapsed).await;
@@ -177,8 +175,7 @@ async fn main() {
 
     println!();
     println!("== can the ceiling be raised? 10 Gbit target, tuned ==");
-    for (flushers, buffer_pool_mib, submit_queue_mib) in
-        [(2, 64, 64), (4, 128, 128), (8, 256, 256)]
+    for (flushers, buffer_pool_mib, submit_queue_mib) in [(2, 64, 64), (4, 128, 128), (8, 256, 256)]
     {
         let t = Trial {
             flushers,

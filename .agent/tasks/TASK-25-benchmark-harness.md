@@ -22,7 +22,13 @@ published report showing parity on every scenario. A benchmark nobody can reprod
 - [ ] S6 restart with 500 GB cached - time to first hit, time to full index
 - [ ] S7 eviction at cap, 24 h mixed replay - hit ratio, eviction rate, latency stability
 
-### Phase 3: Report
+### Phase 3: Set the real floor
+- [ ] Replace `DEFAULT_FLOOR_GBPS` in `crates/cachic/tests/perf_gate.rs` with monolithic's measured
+      throughput on the benchmark host. Until this lands the floor is a provisional backstop, not
+      the floor standard it claims to enforce
+- [ ] Record the nginx figure and the hardware alongside it, so the constant can be justified
+
+### Phase 4: Report
 - [ ] Hardware, versions, raw CSV and the exact commands under `docs/benchmarks/`
 - [ ] Alternating-run methodology stated so results are not accused of ordering bias
 
