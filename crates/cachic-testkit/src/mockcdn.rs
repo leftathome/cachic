@@ -72,6 +72,9 @@ impl Stats {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub range_behaviour: RangeBehaviour,
+    /// Appended to every ETag. Changing it at runtime simulates the object being replaced
+    /// upstream, which is what forces a generation bump (FR-14).
+    pub etag_suffix: Arc<std::sync::atomic::AtomicU64>,
     /// Artificial delay before the first byte, to emulate a WAN origin.
     pub first_byte_delay: Option<Duration>,
     /// Delay inserted between streamed chunks, to emulate a bandwidth-limited origin.
@@ -82,6 +85,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             range_behaviour: RangeBehaviour::Honour,
+            etag_suffix: Arc::new(AtomicU64::new(0)),
             first_byte_delay: None,
             chunk_delay: None,
         }
@@ -93,6 +97,7 @@ pub struct MockCdn {
     addr: SocketAddr,
     stats: Arc<Stats>,
     shutdown: Arc<AtomicBool>,
+    config_etag_suffix: Arc<AtomicU64>,
 }
 
 impl MockCdn {
@@ -102,6 +107,7 @@ impl MockCdn {
         let addr = listener.local_addr()?;
         let stats = Arc::new(Stats::default());
         let shutdown = Arc::new(AtomicBool::new(false));
+        let etag_suffix = config.etag_suffix.clone();
 
         let task_stats = stats.clone();
         let task_shutdown = shutdown.clone();
@@ -135,6 +141,7 @@ impl MockCdn {
             addr,
             stats,
             shutdown,
+            config_etag_suffix: etag_suffix,
         })
     }
 
@@ -144,6 +151,11 @@ impl MockCdn {
 
     pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    /// Replace every object's ETag, simulating the content being changed upstream.
+    pub fn change_validators(&self) {
+        self.config_etag_suffix.fetch_add(1, Ordering::Relaxed);
     }
 
     /// URL for an object of `size` bytes whose content is derived from `name`.
@@ -210,8 +222,8 @@ fn parse_single_range(value: &str, total: u64) -> Option<(u64, u64)> {
     }
 }
 
-fn etag_for(seed: u64, size: u64) -> String {
-    format!("\"{seed:016x}-{size:x}\"")
+fn etag_for(seed: u64, size: u64, suffix: u64) -> String {
+    format!("\"{seed:016x}-{size:x}-{suffix:x}\"")
 }
 
 type BoxedBody = BoxBody<Bytes, Infallible>;
@@ -289,7 +301,10 @@ async fn handle(
         })
         .header(CONTENT_TYPE, "application/octet-stream")
         .header(CONTENT_LENGTH, len.to_string())
-        .header(ETAG, etag_for(seed, size))
+        .header(
+            ETAG,
+            etag_for(seed, size, config.etag_suffix.load(Ordering::Relaxed)),
+        )
         .header(ACCEPT_RANGES, if honour_ranges { "bytes" } else { "none" });
     if partial {
         builder = builder.header(CONTENT_RANGE, format!("bytes {start}-{end}/{size}"));

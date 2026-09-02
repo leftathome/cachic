@@ -10,8 +10,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// Bumped whenever the on-disk slice format changes incompatibly.
-pub const STORE_FORMAT_VERSION: u32 = 1;
+/// Bumped whenever the on-disk format changes incompatibly.
+///
+/// 2: the object index gained a `stale` flag (TASK-17).
+pub const STORE_FORMAT_VERSION: u32 = 2;
 
 const FILE_NAME: &str = "CONFIG";
 
@@ -228,7 +230,7 @@ mod tests {
         let dir = Scratch::new("guard-malformed");
         std::fs::write(
             dir.path().join(FILE_NAME),
-            "store_format_version=1\nslice_size=not-a-number\n",
+            format!("store_format_version={STORE_FORMAT_VERSION}\nslice_size=not-a-number\n"),
         )
         .unwrap();
         let err = check(dir.path(), &config(1 << 20), false).unwrap_err();
@@ -243,7 +245,11 @@ mod tests {
         let dir = Scratch::new("guard-comments");
         std::fs::write(
             dir.path().join(FILE_NAME),
-            "# a comment\n\n  store_format_version = 1 \nslice_size = 1048576\n\n",
+            // Written against the current constant rather than a literal, so bumping
+            // STORE_FORMAT_VERSION does not silently turn this into a mismatch test.
+            format!(
+                "# a comment\n\n  store_format_version = {STORE_FORMAT_VERSION} \nslice_size = 1048576\n\n"
+            ),
         )
         .unwrap();
         check(dir.path(), &config(1 << 20), false).unwrap();

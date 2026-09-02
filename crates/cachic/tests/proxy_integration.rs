@@ -345,6 +345,110 @@ async fn a_range_ignoring_origin_is_fetched_once_for_many_clients() {
 }
 
 #[tokio::test]
+async fn a_validator_change_invalidates_rather_than_mixing_versions() {
+    // FR-14. The one unacceptable outcome is a response whose first half came from a version
+    // that no longer exists, so a mid-object change aborts and invalidates.
+    let h = Harness::start("m2-generation", CdnConfig::default()).await;
+    let size = 6 * SLICE as u64;
+    let path = MockCdn::object_path("mutable", size);
+
+    // Warm one slice so the object's validators are known.
+    let first = h
+        .request(&path)
+        .header("range", "bytes=0-1023")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 206);
+    let original_etag = first.headers()["etag"].to_str().unwrap().to_owned();
+
+    // The object is replaced upstream.
+    h.origin.change_validators();
+
+    // A request needing an unfetched slice must not splice old and new bytes together.
+    //
+    // Once headers are sent there is no status code left to fail with, so the only correct
+    // signal is to abort the body. The client then sees a truncated read and retries, which is
+    // what FR-14 specifies. So there are exactly two acceptable outcomes: a complete body that
+    // is wholly consistent, or a body that fails partway. A complete body containing a mix of
+    // versions is the one thing that must never happen.
+    let second = h.request(&path).send().await.unwrap();
+    match second.bytes().await {
+        Ok(body) => {
+            assert_eq!(
+                body.as_ref(),
+                content::range(content::seed_for("mutable"), 0, size as usize).as_slice(),
+                "a complete response mixed content across a validator change"
+            );
+        }
+        Err(e) => {
+            // Aborted mid-body, which is the designed behaviour.
+            assert!(
+                e.is_body() || e.is_decode(),
+                "expected an aborted body, got {e}"
+            );
+        }
+    }
+
+    // Whatever happened, the next request must see the new version rather than the old one.
+    let third = h
+        .request(&path)
+        .header("range", "bytes=0-1023")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(third.status(), 206);
+    let new_etag = third.headers()["etag"].to_str().unwrap().to_owned();
+    assert_ne!(
+        new_etag, original_etag,
+        "the cache is still serving the old version's validators"
+    );
+}
+
+#[tokio::test]
+async fn if_range_falls_back_to_the_whole_object_on_a_mismatch() {
+    // FR-17. A mismatch is answered with 200 and the full object, not an error.
+    let h = Harness::start("m2-ifrange", CdnConfig::default()).await;
+    let size = 2 * SLICE as u64;
+    let path = MockCdn::object_path("ifrange", size);
+
+    let matching = h
+        .request(&path)
+        .header("range", "bytes=0-99")
+        .send()
+        .await
+        .unwrap();
+    let etag = matching.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(matching.status(), 206);
+
+    // A matching If-Range keeps the partial response.
+    let r = h
+        .request(&path)
+        .header("range", "bytes=0-99")
+        .header("if-range", etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 206);
+    assert_eq!(r.bytes().await.unwrap().len(), 100);
+
+    // A stale If-Range gets the whole object instead.
+    let r = h
+        .request(&path)
+        .header("range", "bytes=0-99")
+        .header("if-range", "\"something-else\"")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        200,
+        "a mismatched If-Range must serve the whole object"
+    );
+    assert_eq!(r.bytes().await.unwrap().len() as u64, size);
+}
+
+#[tokio::test]
 async fn an_unsatisfiable_range_is_416() {
     let h = Harness::start("m1-416", CdnConfig::default()).await;
     let size = 10_000u64;

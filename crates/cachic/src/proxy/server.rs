@@ -207,10 +207,20 @@ async fn serve(
         .get(RANGE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let if_range = req
+        .headers()
+        .get("if-range")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
 
     let orchestrator = config.orchestrator.clone();
+
+    // If-Range means "send the range if the entity is unchanged, otherwise send the whole
+    // object" (FR-17). Resolving it needs the object's current validators, so it is applied
+    // after planning, by re-planning without the range on a mismatch.
+    let mut effective_range = raw_range.clone();
     let plan = match orchestrator
-        .plan(&cache_key, &url, &forwarded, raw_range.as_deref())
+        .plan(&cache_key, &url, &forwarded, effective_range.as_deref())
         .await
     {
         Ok(plan) => plan,
@@ -224,6 +234,27 @@ async fn serve(
         }
         Err(e) => return Err(e),
     };
+
+    let plan = match &if_range {
+        Some(header)
+            if !crate::orchestrator::validators::if_range_matches(
+                header,
+                &crate::orchestrator::validators::Validators::new(
+                    plan.meta.etag.clone(),
+                    plan.meta.last_modified.clone(),
+                ),
+            ) =>
+        {
+            // The entity changed, so the client's range refers to bytes that may no longer be
+            // there. Answer with the whole object, which is what If-Range asks for.
+            effective_range = None;
+            orchestrator
+                .plan(&cache_key, &url, &forwarded, None)
+                .await?
+        }
+        _ => plan,
+    };
+    let _ = &effective_range;
 
     let body_len = if plan.total_len == 0 {
         0

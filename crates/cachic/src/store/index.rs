@@ -59,6 +59,12 @@ pub struct ObjectMeta {
     pub created: u64,
     /// Unix seconds, updated at most once per [`LAST_SEEN_GRANULARITY`].
     pub last_seen: u64,
+    /// The object's validators changed, so everything recorded here except `generation` is
+    /// unreliable and the next request must re-probe (FR-14).
+    ///
+    /// The generation survives because it is what makes the previous version's slices
+    /// unreachable. Losing it across a restart would make stale slices addressable again.
+    pub stale: bool,
 }
 
 impl ObjectMeta {
@@ -67,6 +73,7 @@ impl ObjectMeta {
         out.extend_from_slice(&self.total_len.to_le_bytes());
         out.extend_from_slice(&self.generation.to_le_bytes());
         out.push(self.no_ranges as u8);
+        out.push(self.stale as u8);
         out.extend_from_slice(&self.created.to_le_bytes());
         out.extend_from_slice(&self.last_seen.to_le_bytes());
         put_str(&mut out, Some(&self.key));
@@ -87,6 +94,7 @@ impl ObjectMeta {
             .u32()
             .ok_or_else(|| corrupt("truncated generation"))?;
         let no_ranges = cursor.u8().ok_or_else(|| corrupt("truncated no_ranges"))? != 0;
+        let stale = cursor.u8().ok_or_else(|| corrupt("truncated stale"))? != 0;
         let created = cursor.u64().ok_or_else(|| corrupt("truncated created"))?;
         let last_seen = cursor.u64().ok_or_else(|| corrupt("truncated last_seen"))?;
         let key = cursor
@@ -107,6 +115,7 @@ impl ObjectMeta {
             no_ranges,
             created,
             last_seen,
+            stale,
         })
     }
 }
@@ -228,6 +237,23 @@ impl ObjectIndex {
         Ok(true)
     }
 
+    /// Mark an object stale and bump its generation, so the next request re-probes while the
+    /// previous version's slices stay unreachable.
+    ///
+    /// Returns the new generation. An unknown object starts at generation 1, since generation 0
+    /// may already be on disk from a previous run.
+    pub fn invalidate(&self, id: &ObjectId) -> Result<u32, IndexError> {
+        let mut meta = match self.get(id)? {
+            Some(meta) => meta,
+            None => return Ok(1),
+        };
+        meta.generation = meta.generation.wrapping_add(1);
+        meta.stale = true;
+        let generation = meta.generation;
+        self.put(id, &meta)?;
+        Ok(generation)
+    }
+
     /// Drop entries not seen within `max_age`. Returns how many were removed.
     pub fn prune(&self, max_age: Duration) -> Result<usize, IndexError> {
         let cutoff = now_secs().saturating_sub(max_age.as_secs());
@@ -286,6 +312,7 @@ mod tests {
             no_ranges: false,
             created: now,
             last_seen: now,
+            stale: false,
         }
     }
 
@@ -389,6 +416,33 @@ mod tests {
         let ix = index(&dir);
         assert_eq!(ix.prune(Duration::from_secs(1)).unwrap(), 0);
         assert!(ix.is_empty().unwrap());
+    }
+
+    #[test]
+    fn invalidate_bumps_the_generation_and_marks_the_entry_stale() {
+        // The generation must persist so the previous version's slices stay unreachable across a
+        // restart; everything else is unreliable and must be re-probed.
+        let dir = Scratch::new("index-invalidate");
+        let ix = index(&dir);
+        let id = object_id("/i");
+        ix.put(&id, &meta("/i", 100)).unwrap();
+
+        let generation = ix.invalidate(&id).unwrap();
+        assert_eq!(generation, 1);
+        let got = ix.get(&id).unwrap().unwrap();
+        assert!(got.stale, "entry was not marked stale");
+        assert_eq!(got.generation, 1);
+
+        // A second change bumps again rather than resetting.
+        assert_eq!(ix.invalidate(&id).unwrap(), 2);
+    }
+
+    #[test]
+    fn invalidating_an_unknown_object_starts_at_generation_one() {
+        // Not zero: generation 0 slices may already be on disk from a previous run.
+        let dir = Scratch::new("index-invalidate-unknown");
+        let ix = index(&dir);
+        assert_eq!(ix.invalidate(&object_id("/unknown")).unwrap(), 1);
     }
 
     #[test]

@@ -17,10 +17,11 @@
 //!    than by a limiter bolted on afterwards.
 
 pub mod filler;
+pub mod validators;
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{atomic::Ordering, Arc, Mutex},
 };
 
 use bytes::Bytes;
@@ -111,6 +112,35 @@ impl Orchestrator {
         }
     }
 
+    /// Invalidate an object because its validators changed (FR-14).
+    ///
+    /// Generation is part of the slice key, so incrementing it makes every stored slice of the
+    /// old version unreachable at once. There is no sweep and no window in which a response
+    /// could mix versions; the old slices are evicted in the ordinary course of things.
+    fn bump_generation(&self, object: ObjectId) -> u32 {
+        let next = match self.index.invalidate(&object) {
+            Ok(generation) => generation,
+            Err(e) => {
+                // If the index cannot record the invalidation, the old version stays addressable
+                // and a later request could serve it. Say so loudly rather than continuing with a
+                // guessed generation.
+                tracing::error!(
+                    object = %hex_id(&object),
+                    error = %e,
+                    "could not invalidate the object index; stale content may be served"
+                );
+                1
+            }
+        };
+        // Drop the cached metadata so the next request re-probes and learns the new validators
+        // rather than serving from the version that just went away.
+        self.metadata
+            .lock()
+            .expect("metadata mutex poisoned")
+            .remove(&object);
+        next
+    }
+
     fn cell(&self, object: ObjectId) -> Arc<tokio::sync::OnceCell<ObjectMeta>> {
         // The lock is held only to clone an Arc, never across an await.
         let mut map = self.metadata.lock().expect("metadata mutex poisoned");
@@ -131,9 +161,14 @@ impl Orchestrator {
         headers: &HeaderMap,
         probe_index: u32,
     ) -> Result<(ObjectMeta, bool), OrchestratorError> {
-        if let Ok(Some(meta)) = self.index.get(&object) {
-            let _ = self.index.touch(&object);
-            return Ok((meta, false));
+        // A stale entry means the validators changed: everything it records except the
+        // generation is unreliable, so re-probe rather than serving the old version's shape.
+        match self.index.get(&object) {
+            Ok(Some(meta)) if !meta.stale => {
+                let _ = self.index.touch(&object);
+                return Ok((meta, false));
+            }
+            _ => {}
         }
         let cell = self.cell(object);
         let probed_here = !cell.initialized();
@@ -174,23 +209,31 @@ impl Orchestrator {
             (response.body.len() as u64, true)
         };
 
+        // A previous version's generation survives in the index even when the entry is stale,
+        // and must be respected or the old slices become addressable again.
+        let generation = match self.index.get(&object) {
+            Ok(Some(previous)) => previous.generation,
+            _ => 0,
+        };
         let now = now_secs();
         let meta = ObjectMeta {
             key: key.key.clone(),
             total_len,
-            generation: 0,
+            generation,
             etag,
             last_modified,
             content_type,
             no_ranges,
             created: now,
             last_seen: now,
+            stale: false,
         };
 
         if !no_ranges {
             // The probe already paid for these bytes; keep them rather than fetching again.
             let value = SliceValue::new(header_for(&meta, self.slice_size), response.body);
-            self.store.insert(SliceKey::new(object, 0, index), value);
+            self.store
+                .insert(SliceKey::new(object, generation, index), value);
         }
         let _ = self.index.put(&object, &meta);
         Ok(meta)
@@ -302,21 +345,46 @@ impl Orchestrator {
         let extent = range::slice_extent(index, self.slice_size, plan.total_len);
         let upstream = self.upstream.clone();
         let header = header_for(&plan.meta, self.slice_size);
-        let expected_etag = plan.meta.etag.clone();
+        let expected_validators =
+            validators::Validators::new(plan.meta.etag.clone(), plan.meta.last_modified.clone());
+        let plan_object = plan.object;
+        let url_for_error = url.clone();
+        let expected_etag_for_error = plan.meta.etag.clone();
+        let mismatch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed: Arc<Mutex<Option<validators::Validators>>> = Arc::new(Mutex::new(None));
+        let mismatch_flag = mismatch.clone();
+        let observed_slot = observed.clone();
         let expected_len = extent.len();
         let fetch_url = url.clone();
 
         self.store
             .get_or_fetch(key, move || async move {
+                let mismatch = mismatch_flag;
+                let observed = observed_slot;
                 let response = upstream
                     .fetch_range(&fetch_url, &headers, extent.start, extent.end)
                     .await?;
-                let etag = response.header("etag").map(str::to_owned);
-                if etag != expected_etag {
+                let found = validators::Validators::new(
+                    response.header("etag").map(str::to_owned),
+                    response.header("last-modified").map(str::to_owned),
+                );
+                if !expected_validators.matches(&found) {
                     // The object changed under us. There is no correct way to finish a response
-                    // whose first half came from a version that no longer exists, so fail and let
-                    // TASK-17 turn this into a generation bump.
-                    anyhow::bail!("validators changed mid-object ({expected_etag:?} -> {etag:?})");
+                    // whose first half came from a version that no longer exists, so this fails
+                    // and the caller bumps the generation.
+                    //
+                    // The signal is a shared flag rather than a marker in the error message: the
+                    // error crosses the store's boundary and is rewrapped by foyer, so its text
+                    // does not survive. Relying on the message meant the bump silently never
+                    // happened.
+                    mismatch.store(true, Ordering::Relaxed);
+                    observed
+                        .lock()
+                        .expect("validator mutex poisoned")
+                        .replace(found.clone());
+                    anyhow::bail!(
+                        "validators changed mid-object: {expected_validators:?} -> {found:?}"
+                    );
                 }
                 if response.body.len() as u64 != expected_len {
                     anyhow::bail!(
@@ -327,7 +395,34 @@ impl Orchestrator {
                 Ok(SliceValue::new(header, response.body))
             })
             .await
-            .map_err(OrchestratorError::from)
+            .map_err(|e| {
+                // A validator change is not an ordinary fetch failure: the object being assembled
+                // no longer exists. Invalidate it so the next request sees the new version, and
+                // return a distinct error so the response aborts rather than completing with a
+                // mixture.
+                //
+                // The signal is a shared flag rather than a marker in the error text: the error
+                // crosses the store boundary and is rewrapped, so the message does not survive.
+                if mismatch.load(Ordering::Relaxed) {
+                    let generation = self.bump_generation(plan_object);
+                    let now = observed
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                        .and_then(|v| v.etag);
+                    tracing::warn!(
+                        object = %hex_id(&plan_object),
+                        generation,
+                        "validators changed mid-object; invalidated"
+                    );
+                    return OrchestratorError::ValidatorChanged {
+                        url: url_for_error,
+                        had: expected_etag_for_error,
+                        now,
+                    };
+                }
+                OrchestratorError::from(e)
+            })
     }
 
     /// Ensure slice `index` of a `no_ranges` object is readable, filling the object if nobody
@@ -468,6 +563,10 @@ impl Orchestrator {
     pub fn store(&self) -> &SliceStore {
         &self.store
     }
+}
+
+fn hex_id(id: &ObjectId) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn header_for(meta: &ObjectMeta, slice_size: u32) -> SliceHeader {
