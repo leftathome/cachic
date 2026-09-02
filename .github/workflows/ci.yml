@@ -95,9 +95,17 @@ jobs:
       - name: Verify cargo-fuzz is present
         run: cargo fuzz --version
       - name: Fuzz ${{ matrix.target }}
-        # Short on every push, long on a schedule. Long enough to catch a regression that makes a
-        # parser trivially reachable; the deep search is the nightly job's work.
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=${{ github.event_name == 'schedule' && 1800 || 60 }}
+        # RUSTUP_TOOLCHAIN overrides rust-toolchain.toml, which pins stable and would otherwise
+        # win over the nightly this action installed - libFuzzer needs -Z, which stable rejects.
+        # The target is explicit because cargo-fuzz's host detection picked musl here, which has
+        # no sanitizer support. RUSTFLAGS is cleared because cargo-fuzz composes its own and the
+        # workflow-level -D warnings gets appended into them.
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+          RUSTFLAGS: ""
+        run: |
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- \
+            -max_total_time=${{ github.event_name == 'schedule' && 1800 || 60 }}
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v4
