@@ -284,6 +284,49 @@ impl ObjectIndex {
         Ok(stale.len())
     }
 
+    /// Object ids whose normalised key starts with `prefix`.
+    ///
+    /// Purge is by prefix rather than by arbitrary pattern deliberately. A regex over every key
+    /// in a 2 TB cache is an unbounded scan, which is a denial of service against ourselves; a
+    /// prefix is what an operator actually wants ("drop everything under /depot/440/") and is
+    /// bounded by the number of matches.
+    pub fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<ObjectId>, IndexError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(OBJECTS)?;
+        let mut matches = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let id = key.value();
+            let meta = ObjectMeta::decode(&value.value(), &id)?;
+            if meta.key.starts_with(prefix) {
+                matches.push(id);
+            }
+        }
+        Ok(matches)
+    }
+
+    /// Every object id, for a full purge or an index rebuild.
+    pub fn all_ids(&self) -> Result<Vec<ObjectId>, IndexError> {
+        self.ids_with_prefix("")
+    }
+
+    /// Total bytes the indexed objects claim to occupy.
+    ///
+    /// An estimate: it is what the objects say their lengths are, not what is on disk, since
+    /// eviction may already have removed slices. Good enough for the free-space guard and for
+    /// reporting, and cheap enough to compute on demand.
+    pub fn total_bytes(&self) -> Result<u64, IndexError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(OBJECTS)?;
+        let mut total = 0u64;
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let id = key.value();
+            total = total.saturating_add(ObjectMeta::decode(&value.value(), &id)?.total_len);
+        }
+        Ok(total)
+    }
+
     pub fn len(&self) -> Result<usize, IndexError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(OBJECTS)?;
@@ -443,6 +486,39 @@ mod tests {
         let dir = Scratch::new("index-invalidate-unknown");
         let ix = index(&dir);
         assert_eq!(ix.invalidate(&object_id("/unknown")).unwrap(), 1);
+    }
+
+    #[test]
+    fn finds_objects_by_key_prefix() {
+        let dir = Scratch::new("index-prefix");
+        let ix = index(&dir);
+        for key in ["/depot/440/a", "/depot/440/b", "/depot/570/c", "/other/d"] {
+            ix.put(&object_id(key), &meta(key, 10)).unwrap();
+        }
+        assert_eq!(ix.ids_with_prefix("/depot/440/").unwrap().len(), 2);
+        assert_eq!(ix.ids_with_prefix("/depot/").unwrap().len(), 3);
+        assert_eq!(ix.ids_with_prefix("/nothing").unwrap().len(), 0);
+        assert_eq!(ix.all_ids().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_prefix_does_not_match_mid_key() {
+        // Purging "/depot/44" must not take out "/depot/440" by accident... but it should, since
+        // it is a genuine prefix. What it must not do is match a key that merely contains it.
+        let dir = Scratch::new("index-prefix-mid");
+        let ix = index(&dir);
+        ix.put(&object_id("/a/depot/440/x"), &meta("/a/depot/440/x", 1))
+            .unwrap();
+        assert_eq!(ix.ids_with_prefix("/depot/440").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn sums_indexed_object_sizes() {
+        let dir = Scratch::new("index-bytes");
+        let ix = index(&dir);
+        ix.put(&object_id("/a"), &meta("/a", 1000)).unwrap();
+        ix.put(&object_id("/b"), &meta("/b", 2000)).unwrap();
+        assert_eq!(ix.total_bytes().unwrap(), 3000);
     }
 
     #[test]

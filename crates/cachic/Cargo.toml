@@ -30,6 +30,7 @@ serde_json.workspace = true
 regex.workspace = true
 hickory-resolver.workspace = true
 redb.workspace = true
+libc.workspace = true
 prometheus.workspace = true
 mixtrics.workspace = true
 axum.workspace = true
@@ -64,6 +65,7 @@ test-support = []
 
 [dev-dependencies]
 cachic = { path = ".", features = ["test-support"] }
+serde_json.workspace = true
 cachic-testkit = { path = "../cachic-testkit" }
 reqwest.workspace = true
 tokio.workspace = true

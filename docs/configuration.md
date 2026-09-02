@@ -31,6 +31,7 @@ Sizes accept nginx spellings (`1000g`, `2g`, `1m`) which are binary multiples, m
 | `CACHE_RULES_FILE` | `--rules-file` | - | Optional TOML file of per-service rules |
 | `LOG_FORMAT` | `--log-format` | `json` |  |
 | `LOG_LEVEL` | `--log-level` | `info` |  |
+| `ADMIN_TOKEN` | `--admin-token` | - | Bearer token for the admin API. Empty means unauthenticated, which is only safe because the admin port is bound to loopback or a cluster network by default (FR-54) |
 
 ## Sizing notes
 

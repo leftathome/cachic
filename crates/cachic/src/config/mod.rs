@@ -126,6 +126,11 @@ pub struct Config {
 
     #[arg(long, env = "LOG_LEVEL", default_value = "info")]
     pub log_level: String,
+
+    /// Bearer token for the admin API. Empty means unauthenticated, which is only safe because
+    /// the admin port is bound to loopback or a cluster network by default (FR-54).
+    #[arg(long, env = "ADMIN_TOKEN", default_value = "")]
+    pub admin_token: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]

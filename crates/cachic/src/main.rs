@@ -12,7 +12,10 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use cachic::{
-    admin::{AdminServer, AdminState, Readiness},
+    admin::{
+        api::{ApiState, AuthToken, LateApiState, ServiceInfo},
+        AdminServer, AdminState, Readiness,
+    },
     config::{units, Config},
     orchestrator::Orchestrator,
     proxy::server::{Server, ServerConfig},
@@ -84,15 +87,17 @@ async fn run(config: Config) -> Result<(), Fatal> {
     // Admin first: an orchestrator watching /readyz should see "starting", not a refused
     // connection, while a large cache directory opens.
     let admin_addr = SocketAddr::from(([0, 0, 0, 0], config.admin_port));
-    let admin = AdminServer::bind(
-        admin_addr,
-        AdminState {
-            metrics: metrics.clone(),
-            readiness: readiness.clone(),
-        },
-    )
-    .await
-    .map_err(|e| Fatal::Unavailable(format!("cannot bind the admin port {admin_addr}: {e}")))?;
+    let admin_state = AdminState {
+        metrics: metrics.clone(),
+        readiness: readiness.clone(),
+    };
+    // Bound before the store opens, so a liveness probe never gets connection-refused while a
+    // large cache directory is recovering - being restarted mid-recovery is exactly wrong. The
+    // operator API's state is published below; until then its endpoints report 503.
+    let late_api = LateApiState::new();
+    let admin = AdminServer::bind_with_api(admin_addr, admin_state, late_api.clone())
+        .await
+        .map_err(|e| Fatal::Unavailable(format!("cannot bind the admin port {admin_addr}: {e}")))?;
     tracing::info!(addr = %admin.addr(), "admin listening");
 
     let store = SliceStore::open_with_metrics(
@@ -130,6 +135,17 @@ async fn run(config: Config) -> Result<(), Fatal> {
     )
     .map_err(|e| Fatal::Unavailable(chain(&e)))?;
 
+    let store_handle = store.clone();
+    let index_handle = index.clone();
+    let service_infos: Vec<ServiceInfo> = domain_list
+        .services
+        .iter()
+        .map(|s| ServiceInfo {
+            name: s.name.clone(),
+            patterns: s.patterns.len(),
+        })
+        .collect();
+
     let orchestrator = Arc::new(Orchestrator::new(
         store,
         index,
@@ -166,6 +182,23 @@ async fn run(config: Config) -> Result<(), Fatal> {
     .await
     .map_err(|e| Fatal::Unavailable(format!("cannot bind the HTTP port {http_addr}: {e}")))?;
     readiness.set_listeners_bound(true);
+
+    late_api.set(ApiState {
+        store: store_handle,
+        index: index_handle,
+        drain: drain.clone(),
+        readiness: readiness.clone(),
+        token: AuthToken::new(&config.admin_token),
+        services: Arc::new(service_infos),
+        data_dir: config.cache_data_dir.clone(),
+        configured_disk_bytes: config.cache_disk_size,
+        min_free_bytes: config.min_free_disk,
+        slice_size: config.cache_slice_size as u32,
+    });
+    tracing::info!(
+        authenticated = !config.admin_token.is_empty(),
+        "admin API available"
+    );
 
     tracing::info!(
         addr = %server.addr(),

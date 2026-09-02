@@ -5,3 +5,4 @@
 pub mod hybrid;
 pub mod index;
 pub mod slice;
+pub mod space;

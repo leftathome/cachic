@@ -13,7 +13,15 @@ use std::{
     },
 };
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Router};
+pub mod api;
+
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Router,
+};
 
 use crate::telemetry::metrics::Metrics;
 
@@ -71,6 +79,18 @@ pub fn router(state: AdminState) -> Router {
         .with_state(state)
 }
 
+/// The full admin surface: probes and metrics plus the operator API (FR-54).
+pub fn router_with_api(state: AdminState, api: api::LateApiState) -> Router {
+    router(state).merge(
+        Router::new()
+            .route("/stats", get(api::stats))
+            .route("/services", get(api::services))
+            .route("/purge", post(api::purge))
+            .route("/drain", post(api::drain))
+            .with_state(api),
+    )
+}
+
 async fn metrics(State(state): State<AdminState>) -> impl IntoResponse {
     match state.metrics.render() {
         Ok(body) => (
@@ -112,11 +132,26 @@ pub struct AdminServer {
 
 impl AdminServer {
     pub async fn bind(listen: SocketAddr, state: AdminState) -> std::io::Result<Self> {
+        Self::bind_router(listen, router(state)).await
+    }
+
+    /// Bind with the operator API mounted alongside the probes.
+    ///
+    /// The API's state may be published later; until it is, its endpoints report 503 while the
+    /// probes answer normally.
+    pub async fn bind_with_api(
+        listen: SocketAddr,
+        state: AdminState,
+        api: api::LateApiState,
+    ) -> std::io::Result<Self> {
+        Self::bind_router(listen, router_with_api(state, api)).await
+    }
+
+    async fn bind_router(listen: SocketAddr, app: Router) -> std::io::Result<Self> {
         let listener = tokio::net::TcpListener::bind(listen).await?;
         let addr = listener.local_addr()?;
         let shutdown = Arc::new(AtomicBool::new(false));
         let task_shutdown = shutdown.clone();
-        let app = router(state);
 
         tokio::spawn(async move {
             let signal = async move {
