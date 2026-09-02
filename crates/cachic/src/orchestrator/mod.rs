@@ -202,7 +202,7 @@ impl Orchestrator {
     ) -> Result<Plan, OrchestratorError> {
         let object = key.object_id();
 
-        // Parse before probing: a multi-range or unparseable header means serve the whole object,
+        // Parse before probing: a multi-range or unparsable header means serve the whole object,
         // which changes which slice is worth probing with.
         let spec = match raw_range.map(range::parse_range) {
             None => None,
