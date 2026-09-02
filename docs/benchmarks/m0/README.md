@@ -2,7 +2,7 @@
 
 Produced by TASK-04 to answer the M0 questions and to give the ADRs something to cite.
 
-## Status: provisional, and the go/no-go is NOT resolved
+## Status: provisional hardware; the store go/no-go is resolved in foyer's favour
 
 Two things must be read before any number here is used.
 
@@ -12,9 +12,9 @@ machine with the mock origin, the proxy and the load generator all on the same b
 the same cores and the same virtual disk. Treat these as a shape, not as a result. The NUC and
 Synology runs are still outstanding.
 
-**2. The store does not survive restart, and it is foyer's defect rather than our misuse.** See
-"Blocking finding" below, which includes a reproducer written directly against foyer's public API.
-The throughput numbers are worth having; the recovery numbers block the Rust + foyer bet.
+**2. An earlier version of this report was wrong about the store.** It claimed foyer lost half its
+contents across a restart. The cause was a benchmark writing at 2.4 GB/s with no backpressure; see
+"Resolved finding" below. foyer is fit for purpose and the Rust + foyer bet holds.
 
 ## Environment
 
@@ -48,61 +48,67 @@ measure --dir /var/tmp/cachic proxy        --clients 8 --object-mib 256 --slice-
 
 Raw output is in `results.csv`.
 
-## Blocking finding: the disk tier does not survive close and reopen
+## Resolved finding: foyer drops disk writes when the writer outruns the flusher
 
-Writing 512 slices of 1 MiB, closing the store cleanly, reopening it, and reading the same keys
-back recovers **30 of 512 slices (5.9%)**. Reopening takes 1 ms, which is itself the tell: nothing
-is being scanned or rebuilt.
+An earlier version of this report claimed the store lost more than half its contents across a
+clean restart, and called it a foyer defect. **That was wrong, and the error was in the
+benchmark.** The record is kept here because the way it was wrong is instructive.
 
-The same effect appears in every store run: 68 of 128 slices missing at one size, 799 and 1088 of
-2048 at another. It is present with direct IO and with buffered IO, at 16 MiB and 64 MiB blocks,
-and with a memory tier both larger and smaller than the data.
+### What is actually happening
 
-### This is foyer, not our usage
+foyer silently discards a disk write when the submit queue is saturated, incrementing
+`storage_queue_channel_overflow`, and returns nothing to the caller. For a cache that is a
+reasonable design: a dropped write is a future miss, not data loss. The behaviour is entirely
+governed by write rate:
 
-The obvious suspicion was that we hold foyer wrong - in particular that populating the cache
-through `get_or_fetch` (which is how a proxy fills a cache as a side effect of serving) is not a
-supported way to write. `cargo run --release --bin foyerprobe` tests that directly. It uses
-foyer's public API with no cachic types involved: plain `u64` keys and `Vec<u8>` values, no slice
-codec, no store wrapper.
+| Insert rate | Entries kept |
+|---|---|
+| 2,442 MiB/s (no pacing) | 46.9% |
+| 303 MiB/s | **100%** |
+| 88 MiB/s | **100%** |
+| 38 MiB/s | **100%** |
 
-| Populated with | Policy | Recovered |
-|---|---|---|
-| `insert` | `WriteOnInsertion` | 120 / 256 (46.9%) |
-| `get_or_fetch` | `WriteOnInsertion` | 75 / 256 (29.3%) |
-| `insert` | `WriteOnEviction` | 71 / 256 (27.7%) |
-| `get_or_fetch` | `WriteOnEviction` | 89 / 256 (34.8%) |
-| `insert`, 4 KiB entries | `WriteOnInsertion` | 2048 / 4096 (50.0%) |
+Same capacity, same block size, same memory tier, same policy. Pace the writer below the
+flusher's drain rate and nothing is lost.
 
-Every trial writes far less data than the disk tier holds (256 MiB into 1 GiB; 16 MiB into
-256 MiB), so nothing is being evicted for capacity. Every trial sets `flush_on_close(true)`,
-uses buffered IO, and closes cleanly before reopening.
+### Why it looked like a restart-durability problem
 
-So it is not our slice codec, not our store wrapper, not `get_or_fetch`, not the cache policy, not
-direct IO, not `flush_on_close`, not the IO throttle (unlimited by default), and not disk capacity.
-`RecoverMode` already defaults to `Quiet`, which recovers while silently skipping errors - which
-would hide precisely this.
+Two mistakes compounded.
 
-The exact 50.0% in the small-entry trial is the most suggestive number here. A clean one-in-two
-ratio looks like a systematic indexing or scanning defect rather than a tuning problem.
+First, the harness only counted entries *after* a close and reopen, which cannot distinguish
+"dropped on the way to disk" from "written and then not recovered". Counting live, before the
+close, settles it immediately: the live count and the post-reopen count match, so recovery was
+never at fault. Recovery works correctly.
 
-**Conclusion: this is foyer 0.22.4 behaviour, reproducible through its documented public API.**
-The next action is an upstream issue carrying `foyerprobe` as the reproducer, not further local
-guessing. It remains possible that some required configuration is not discoverable from the
-builder API or the docs; if so, that is still a finding, and the answer will come from upstream
-faster than from us.
+Second, a large memory tier masks the drops. With a 512 MiB memory tier the live count is 100%
+while the post-reopen count is 81.2% - entries sat in RAM, so reads succeeded, while their disk
+writes had been discarded. The very first run of this harness used a 4 GiB memory tier and
+reported zero misses, which read like a clean control and was in fact the symptom being hidden.
 
-This matters because FR-43 is a P0: "serve hits within seconds; full index rebuilt in the
-background; no dependency on a clean shutdown". What was measured is worse than a dependency on a
-clean shutdown - the shutdown *was* clean. A cache that keeps under half its contents across a
-restart is not a capacity tier, and on the 2 TB caches this project targets, refilling that from
-the internet is the entire problem the product exists to avoid.
+The underlying benchmark error: inserting at memory speed with no backpressure, a rate no real
+cachic workload produces. Filling from a CDN over a domestic connection is tens of MiB/s, roughly
+two orders of magnitude below where dropping begins.
 
-### Second defect: close() hangs after failed fetches
+### What this means for cachic
 
-`HybridCache::close()` does not return within 20 seconds after a read pass in which some fetch
-closures returned errors. It returns promptly when every fetch succeeds. That threatens FR-62
-(graceful shutdown within a bounded time) and is why the harness now wraps `close()` in a timeout.
+foyer is fit for purpose. FR-43 is not in danger. But three things follow and are not optional:
+
+1. **`storage_queue_channel_overflow` and `storage_block_engine_enqueue_skip` must be exposed**
+   through `/metrics` (FR-50). A cache that silently declines to cache is the worst failure mode
+   this product can have, and it is invisible without these counters. This is now a TASK-13
+   requirement, not a nice-to-have.
+2. **The fill path needs to respect the drain rate.** Normal operation is far below the threshold,
+   but prefill (SteamPrefill and friends at LAN speed) is the case that can approach it, and
+   `MIN_FREE_DISK`-style guards do not help here. Worth an explicit test in TASK-20.
+3. **Benchmarks must not write at rates the product cannot produce.** The measurement harness
+   should pace writes to a configured rate by default.
+
+### Still open: close() hangs after failed fetches
+
+`HybridCache::close()` did not return within 20 seconds after a read pass containing failed fetch
+closures, and returned promptly when every fetch succeeded. This was observed before the write-rate
+cause was understood and has not been re-examined since; it may share a root cause. It threatens
+FR-62 and needs re-testing rather than reporting as-is.
 
 ## Throughput
 
@@ -185,9 +191,8 @@ Other observations:
 
 ## What is still outstanding
 
-- File the recovery defect upstream with `foyerprobe` as the reproducer, and decide between
-  waiting for a fix, carrying a patch, or moving to the fallback store design (ADR 0003).
-- File the `close()` hang after failed fetches.
+- Re-test the `close()` hang after failed fetches now that the write-rate cause is understood.
+- Pace writes in the measurement harness by default, and re-run the store numbers with pacing.
 - Re-run everything on the amd64 NUC with NVMe, clients on a separate 10 GbE host.
 - Re-run the direct versus buffered IO comparison on real NVMe; the WSL2 answer probably inverts.
 - Synology NFS over 10 GbE, as a second storage shape.

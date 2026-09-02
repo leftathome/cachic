@@ -1,7 +1,7 @@
 # 0003. Store engine and object index
 
-- **Status**: **Provisional.** The chosen engine does not meet a P0 requirement, most likely
-  because that requirement is outside what it is built for.
+- **Status**: Accepted. (Two earlier revisions marked this blocked on a store defect; that
+  finding was a benchmark error and is documented below rather than removed.)
 - **Date**: 2026-09-01
 - **Context**: M0 (TASK-03, TASK-04), plan section 1.3, plan section 10
 
@@ -18,7 +18,7 @@ fallback design ready (per-object sparse files plus a bitmap sidecar, about two 
 
 ## Decision
 
-Keep foyer behind the `Store` trait, but **do not commit to it**. M0 does not confirm the bet.
+**Accepted. foyer stays**, behind the `store::Store` trait, with `redb` for the object index.
 
 The design decisions that do not depend on the engine are confirmed and stand:
 
@@ -30,30 +30,61 @@ The design decisions that do not depend on the engine are confirmed and stand:
 - **`redb` for the object index**, unchanged. M0 did not exercise it; the spike used an in-memory
   map, and the index is TASK-11's work.
 
-## The defect
+## The finding that nearly reversed this, and why it was wrong
 
-After a clean close and reopen, foyer 0.22.4 returns fewer than half the entries written, with no
-error reported. Measured at 5.9%, 27.7%, 29.3%, 34.8%, 46.9% and exactly 50.0% across
-configurations. Full data and methodology in `docs/benchmarks/m0/README.md`.
+M0 initially measured foyer returning fewer than half its entries after a clean restart, and two
+earlier revisions of this ADR treated that as blocking - first as a foyer defect, then as a
+requirements mismatch. **Both were wrong. It was a benchmark error.**
 
-This was checked against the hypothesis that we were using foyer incorrectly. The `foyerprobe`
-binary reproduces it through foyer's public API with plain `u64` keys and `Vec<u8>` values, with
-no cachic types involved, populating via `insert` (not just `get_or_fetch`), under both cache
-policies, with `flush_on_close(true)`, buffered IO, and a disk tier four times the data written so
-nothing is evicted for capacity. It is not our codec, our wrapper, our fill path, the policy, the
-IO mode, or the capacity.
+foyer silently discards a disk write when its submit queue is saturated, incrementing
+`storage_queue_channel_overflow`. For a cache that is a defensible design: a dropped write is a
+future miss, not data loss. The behaviour is governed entirely by write rate:
 
-A second defect: `HybridCache::close()` does not return within 20 seconds after a read pass
-containing failed fetch closures, which threatens FR-62.
+| Insert rate | Entries kept |
+|---|---|
+| 2,442 MiB/s | 46.9% |
+| 303 MiB/s | 100% |
+| 88 MiB/s | 100% |
+| 38 MiB/s | 100% |
 
-Against that, what foyer did do well:
+The harness was inserting at memory speed with no backpressure - a rate cachic never produces,
+since filling from a CDN over a domestic line is tens of MiB/s. It also only counted entries after
+a restart, which cannot separate "dropped on write" from "not recovered"; counting live, before
+the close, shows the two numbers match and recovery was never at fault. A large memory tier made
+it worse by masking the drops behind RAM hits until a restart exposed them.
+
+Full detail in `docs/benchmarks/m0/README.md`. `cargo run --release --bin foyerprobe` reproduces
+the whole sweep.
+
+**This is worth recording rather than quietly deleting**, because the failure mode generalises: a
+benchmark that drives a component far outside its operating range produces confident, reproducible,
+completely misleading numbers, and "reproducible" felt like sufficient evidence at the time.
+
+## Consequences
+
+What M0 establishes about foyer, positively:
 
 - **Request coalescing works exactly as FR-30 needs.** 32 concurrent misses on one key produce one
   fetch; end to end, 24 clients on a cold 8-slice object produced at most 12 upstream requests, and
   a 256 MiB object at 1 MiB slices produced exactly 257 upstream requests (256 slices plus a probe).
   This is the behaviour we wanted over nginx's `proxy_cache_lock`, and it is not trivial to build.
 - **Warm memory-tier reads are effectively free** (25 GiB/s including a checksum over every byte).
+- **Recovery is correct** when writes are not being dropped.
 - **Memory accounting is honest**: RSS tracked the configured tier in every run.
+
+Three obligations follow, and they are not optional:
+
+1. **Expose `storage_queue_channel_overflow` and `storage_block_engine_enqueue_skip` through
+   `/metrics`** (FR-50). A cache that silently declines to cache is the worst failure this product
+   can have, and without these counters it is invisible. This is a TASK-13 requirement.
+2. **Respect the flusher's drain rate on the fill path.** Normal operation is far below the
+   threshold; prefill at LAN speed is the case that can approach it. TASK-20 should test it.
+3. **Do not benchmark at rates the product cannot generate.** The measurement harness should pace
+   writes by default.
+
+Still open: `HybridCache::close()` did not return within 20 seconds after a read pass containing
+failed fetches. That was observed before the write-rate cause was understood and may share a root
+cause; it needs re-testing before it is treated as real.
 
 ## Cost of the index
 
@@ -63,49 +94,25 @@ than the incumbent, which is a sizing-documentation obligation (a 2 TB cache is 
 10 TB is ~3.8 GB) and an argument for a larger default slice size on large caches. This is
 independent of the recovery defect and applies to any decision to keep foyer.
 
-## Options
+## On alternatives
 
-Listed cheapest first. None of these is "write a cache engine in another language"; that is not on
-the table and was never proposed.
-
-1. **Engage foyer upstream.** Ask whether restart recovery is in scope, what `RecoverMode::Strict`
-   surfaces, and what it would take. This is a design conversation with a maintainer, not a bug
-   report, and foyer has real momentum and an active maintainer. It is also how the project's
-   reuse goal (G5, "contribute back") is meant to work. Carries `foyerprobe` as the reproducer.
-2. **Keep foyer for what it is good at; own the durable tier.** foyer's coalescing is excellent -
-   it satisfies FR-30 end to end, one upstream fetch per slice, verified - and its memory tier is
-   effectively free. Neither is trivial to rebuild. A hybrid where foyer serves as the RAM tier and
-   single-flight mechanism, over a disk tier we own, keeps most of the reuse benefit. Our slices
-   are already self-describing precisely so an index can be rebuilt by scanning them (FR-44).
-3. **Contribute the recovery path upstream.** Strictly better than carrying a patch if the
-   maintainer wants it; requires reading foyer's block engine and recovery scanner first.
-4. **Fall back to the plan's own design**: per-object sparse files plus a bitmap sidecar, redb for
-   the index, in Rust. Costed at about two weeks in plan section 10. This is the last resort, not
-   the expected outcome.
-
-The `Store` trait boundary means nothing above the store changes under any of these, which is
-exactly why the plan drew that boundary.
-
-## What has not been done
-
-**No survey of alternative stores has been carried out, in Rust or in Go.** The plan named foyer,
-and M0 measured foyer. Plan section 0.1 asserts that Go has "no equivalent" and that a custom store
-there costs 3-5 weeks; that assertion is inherited, not verified. Before option 4 is chosen - and
-before ADR 0001 is reopened on language grounds - that survey has to happen, covering at minimum
-the Rust hybrid-cache and embedded-store landscape and the Go equivalents.
+No survey of alternative stores was carried out, in Rust or in Go, and none is now needed to
+unblock M1: foyer meets the requirement. Plan section 0.1's claim that Go has "no equivalent" to
+foyer remains inherited and unverified, and should be treated as such if the language question is
+ever genuinely reopened - but nothing in M0 reopens it. Writing a store from scratch, in either
+language, is not on the table.
 
 ## Next action
 
-Open the conversation with foyer upstream, carrying `foyerprobe`. In parallel, run the store
-survey that M0 skipped. Do not start TASK-11 until this is resolved - it is the task that would
-have to be redone.
+Proceed to TASK-11 with foyer, carrying the three obligations above.
 
 ## What would overturn this
 
-A foyer release, or a configuration we have not found, that recovers written entries across a
-clean restart and does not hang on close. That would move this ADR to Accepted unchanged.
+Evidence that the drop threshold is reachable in normal operation rather than only under
+synthetic load - most likely from prefill at LAN speed, or from a much faster upstream than the
+domestic line this was reasoned about. The `storage_queue_channel_overflow` metric is what would
+show it, which is why exposing it is an obligation rather than a suggestion.
 
-Conversely, evidence that FR-43 is softer than written - that operators tolerate a cold cache after
-a restart - would dissolve the problem entirely. That is worth asking before engineering around it:
-the requirement is ours to set. On a 2 TB cache filled over a domestic connection, refilling is
-measured in days, which is why it was made P0 in the first place.
+Independently: index cost at 381-463 bytes per entry is three times the incumbent's. If a
+deployment target appears where that is prohibitive, the trade is a larger slice size (ADR 0004)
+before it is a different store.
