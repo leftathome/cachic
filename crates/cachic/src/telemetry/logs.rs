@@ -28,6 +28,51 @@ pub struct AccessEvent {
     pub cache_status: String,
     pub upstream_seconds: f64,
     pub user_agent: Option<String>,
+    /// Common Log Format timestamp, e.g. `02/Sep/2026:07:30:00 +0000`.
+    ///
+    /// Carried on the event rather than added by the subscriber, because the lancache format
+    /// places it positionally inside the line and dashboards parse it there.
+    pub timestamp: String,
+}
+
+/// Format a Unix timestamp the way Common Log Format expects.
+///
+/// Hand-rolled rather than pulling in a date library: this is the only place cachic formats a
+/// time, the format is fixed, and UTC means no zone database is involved.
+pub fn clf_timestamp(unix_seconds: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let days = unix_seconds / 86_400;
+    let secs_of_day = unix_seconds % 86_400;
+    let (hour, minute, second) = (
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60,
+    );
+
+    // Civil-from-days, the standard algorithm; shifts the epoch to 0000-03-01 so leap days land
+    // at the end of the cycle.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+
+    format!(
+        "{:02}/{}/{:04}:{:02}:{:02}:{:02} +0000",
+        d,
+        MONTHS[(m - 1) as usize],
+        year,
+        hour,
+        minute,
+        second
+    )
 }
 
 impl AccessEvent {
@@ -38,13 +83,12 @@ impl AccessEvent {
     /// reason.
     pub fn to_lancache(&self) -> String {
         let mut out = String::with_capacity(160);
-        // The timestamp is supplied by the subscriber layer in production, so it is a literal
-        // dash here; keeping it out of the struct lets the format be tested without freezing time.
         let _ = write!(
             out,
-            "[{}] {} / - - - [-] \"{} {} HTTP/1.1\" {} {} \"-\" \"{}\" \"{}\"",
+            "[{}] {} / - - - [{}] \"{} {} HTTP/1.1\" {} {} \"-\" \"{}\" \"{}\"",
             self.service,
             self.client_ip,
+            self.timestamp,
             self.method,
             self.path,
             self.status,
@@ -70,6 +114,7 @@ impl AccessEvent {
                 bytes = self.bytes,
                 cache = %self.cache_status,
                 upstream_seconds = self.upstream_seconds,
+                timestamp = %self.timestamp,
                 "request"
             ),
             LogFormat::Lancache => tracing::info!(
@@ -97,7 +142,15 @@ pub fn init(format: LogFormat, level: &str) {
             .try_init(),
         LogFormat::Lancache => tracing_subscriber::registry()
             .with(filter)
-            .with(fmt::layer().without_time().with_target(false))
+            .with(
+                // Bare lines: no timestamp, no level, no target. LANCache Manager and friends
+                // parse this positionally, and a leading "INFO " shifts every field. The
+                // timestamp lives inside the line itself, where the format puts it.
+                fmt::layer()
+                    .without_time()
+                    .with_target(false)
+                    .with_level(false),
+            )
             .try_init(),
     };
     let _ = result;
@@ -120,6 +173,7 @@ mod tests {
             cache_status: "HIT".into(),
             upstream_seconds: 0.0,
             user_agent: Some("Valve/Steam HTTP Client 1.0".into()),
+            timestamp: clf_timestamp(1_756_800_000),
         }
     }
 
@@ -142,6 +196,29 @@ mod tests {
         e.user_agent = None;
         let line = e.to_lancache();
         assert!(line.contains("\"-\" \"HIT\""), "{line}");
+    }
+
+    #[test]
+    fn formats_common_log_timestamps() {
+        // Spot values across a leap year and a century boundary, since the civil-from-days
+        // algorithm is exactly where a hand-rolled date formatter goes wrong.
+        assert_eq!(clf_timestamp(0), "01/Jan/1970:00:00:00 +0000");
+        assert_eq!(clf_timestamp(86_399), "01/Jan/1970:23:59:59 +0000");
+        assert_eq!(clf_timestamp(86_400), "02/Jan/1970:00:00:00 +0000");
+        // 2000-02-29, a leap year despite being divisible by 100.
+        assert_eq!(clf_timestamp(951_782_400), "29/Feb/2000:00:00:00 +0000");
+        // 2024-02-29, an ordinary leap year.
+        assert_eq!(clf_timestamp(1_709_164_800), "29/Feb/2024:00:00:00 +0000");
+        assert_eq!(clf_timestamp(1_735_689_600), "01/Jan/2025:00:00:00 +0000");
+    }
+
+    #[test]
+    fn the_timestamp_appears_where_dashboards_expect_it() {
+        let line = event().to_lancache();
+        assert!(
+            line.contains("[02/Sep/2025:"),
+            "timestamp missing or misplaced: {line}"
+        );
     }
 
     #[test]

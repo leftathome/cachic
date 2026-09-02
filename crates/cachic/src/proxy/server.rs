@@ -43,6 +43,11 @@ type BoxedBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
 pub struct ServerConfig {
     pub orchestrator: Arc<Orchestrator>,
+    /// Access-log format. `Json` is the supported output; `Lancache` emits monolithic's
+    /// `cachelog` so existing dashboards keep working (FR-52).
+    pub log_format: crate::config::LogFormat,
+    /// Metrics, if telemetry is wired. Absent in tests that do not care.
+    pub metrics: Option<Arc<crate::telemetry::metrics::Metrics>>,
     pub matcher: Arc<Matcher>,
     pub rules: Arc<Rules>,
     pub compiled: Arc<std::collections::HashMap<String, CompiledRule>>,
@@ -70,6 +75,8 @@ impl ServerConfig {
             passthrough_unknown_hosts: false,
             connections: crate::proxy::limits::ConnectionLimit::new(10_000),
             drain: crate::proxy::shutdown::Drain::new(),
+            log_format: crate::config::LogFormat::Json,
+            metrics: None,
         }
     }
 }
@@ -112,14 +119,25 @@ impl Server {
                     continue;
                 };
 
+                let peer = stream
+                    .peer_addr()
+                    .map(|a| a.ip().to_string())
+                    .unwrap_or_else(|_| "-".into());
                 let io = TokioIo::new(stream);
                 let config = config.clone();
                 tokio::spawn(async move {
                     // The permit is released when this task ends, however it ends.
                     let _permit = permit;
-                    let service = service_fn(move |req| handle(req, config.clone()));
+                    if let Some(metrics) = &config.metrics {
+                        metrics.connections.inc();
+                    }
+                    let connection_metrics = config.metrics.clone();
+                    let service = service_fn(move |req| handle(req, config.clone(), peer.clone()));
                     // Errors here are client disconnects; the proxy does not care.
                     let _ = http1::Builder::new().serve_connection(io, service).await;
+                    if let Some(metrics) = &connection_metrics {
+                        metrics.connections.dec();
+                    }
                 });
             }
         });
@@ -164,6 +182,7 @@ fn text(status: StatusCode, message: &str) -> Response<BoxedBody> {
 async fn handle(
     req: Request<hyper::body::Incoming>,
     config: Arc<ServerConfig>,
+    client_ip: String,
 ) -> Result<Response<BoxedBody>, Infallible> {
     // Refuse new requests once draining, so a keep-alive connection cannot extend the drain
     // indefinitely by issuing request after request.
@@ -173,16 +192,96 @@ async fn handle(
             "cachic is shutting down\n",
         ));
     };
-    match serve(req, config).await {
-        Ok(response) => Ok(response),
+
+    let started = std::time::Instant::now();
+    let method = req.method().to_string();
+    let path = req.uri().path().to_string();
+    let host = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let range = req
+        .headers()
+        .get(RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let user_agent = req
+        .headers()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    let response = match serve(req, config.clone()).await {
+        Ok(response) => response,
         Err(e) => {
             tracing::warn!(error = %e, "request failed");
-            Ok(text(
-                StatusCode::BAD_GATEWAY,
-                &format!("upstream error: {e}\n"),
-            ))
+            text(StatusCode::BAD_GATEWAY, &format!("upstream error: {e}\n"))
         }
+    };
+
+    // One access event per served request (FR-51, FR-52). Emitted here rather than in `serve` so
+    // that error responses are logged too - a cache whose failures are invisible is worse than
+    // one with no log at all.
+    let status = response.status().as_u16();
+    let service = response
+        .headers()
+        .get("x-cachic-service")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let cache_status = response
+        .headers()
+        .get("x-cache")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let bytes = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    if let Some(metrics) = &config.metrics {
+        metrics
+            .requests
+            .with_label_values(&[&service, &cache_status])
+            .inc();
+        metrics
+            .bytes_served
+            .with_label_values(&[&service, &cache_status])
+            .inc_by(bytes);
     }
+
+    crate::telemetry::logs::AccessEvent {
+        client_ip,
+        service,
+        host,
+        method,
+        path,
+        range,
+        status,
+        bytes,
+        cache_status,
+        upstream_seconds: started.elapsed().as_secs_f64(),
+        user_agent,
+        timestamp: crate::telemetry::logs::clf_timestamp(crate::store::index::now_secs()),
+    }
+    .emit(config.log_format);
+
+    let mut response = response;
+    strip_internal_headers(&mut response);
+    Ok(response)
+}
+
+/// Remove the internal header the access log uses to attribute a request.
+///
+/// It exists only to carry the service name from `serve` to `handle`; a client has no business
+/// seeing our internal routing decisions.
+fn strip_internal_headers(response: &mut Response<BoxedBody>) {
+    response.headers_mut().remove("x-cachic-service");
 }
 
 async fn serve(
@@ -315,7 +414,10 @@ async fn serve(
         .header(CONTENT_LENGTH, body_len.to_string())
         .header(ACCEPT_RANGES, "bytes")
         .header("x-cache", plan.cache_status.as_str())
-        .header("x-lancache-processed-by", config.hostname.clone());
+        .header("x-lancache-processed-by", config.hostname.clone())
+        // Internal: read back by the access log so it can attribute the request to a service
+        // without re-running the matcher. Stripped before the response leaves the process.
+        .header("x-cachic-service", service.clone());
     if plan.partial && plan.total_len > 0 {
         builder = builder.header(
             CONTENT_RANGE,

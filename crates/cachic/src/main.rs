@@ -199,6 +199,8 @@ async fn run(config: Config) -> Result<(), Fatal> {
             passthrough_unknown_hosts: config.passthrough_unknown_hosts,
             connections: connections.clone(),
             drain: drain.clone(),
+            log_format: config.log_format,
+            metrics: Some(metrics.clone()),
         }),
     )
     .await
