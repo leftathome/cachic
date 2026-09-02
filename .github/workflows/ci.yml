@@ -133,14 +133,23 @@ jobs:
             --set hostNetwork=true \
             --set persistence.existingClaim=preexisting \
             --set serviceRules.steam.keep_query=true > /dev/null
+      - name: Install kubeconform
+        # Installed as a binary rather than run as a container action: the published image is
+        # distroless, so overriding its entrypoint with /bin/sh fails with "no such file".
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
       - name: Validate rendered manifests against the Kubernetes schema
-        uses: docker://ghcr.io/yannh/kubeconform:latest
-        with:
-          entrypoint: /bin/sh
-          args: >-
-            -c "helm template cachic charts/cachic | kubeconform -strict -summary
-            -schema-location default
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'"
+        # The CRD schema location covers ServiceMonitor, which is not a built-in kind.
+        run: |
+          helm template cachic charts/cachic \
+            --set metrics.serviceMonitor.enabled=true \
+            --set admin.token=secret \
+            --set serviceRules.steam.keep_query=true \
+          | kubeconform -strict -summary \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' 
 
   docs:
     name: Docs build
