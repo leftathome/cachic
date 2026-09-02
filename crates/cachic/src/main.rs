@@ -20,6 +20,7 @@ use cachic::{
     orchestrator::Orchestrator,
     proxy::server::{Server, ServerConfig},
     services::{domains, domains::DomainList, key::CompiledRule, matcher::Matcher},
+    sni::proxy::SniProxy,
     store::{hybrid::SliceStore, hybrid::StoreConfig, index::ObjectIndex},
     telemetry::{logs, metrics::Metrics},
     upstream::{
@@ -148,6 +149,7 @@ async fn run(config: Config) -> Result<(), Fatal> {
         UpstreamResolver::new(&config.upstream_dns, config.allow_private_upstreams)
             .map_err(|e| Fatal::Config(chain(&e)))?,
     );
+    let sni_resolver = resolver.clone();
     let upstream = UpstreamClient::new(
         resolver,
         ClientConfig {
@@ -205,6 +207,14 @@ async fn run(config: Config) -> Result<(), Fatal> {
     )
     .await
     .map_err(|e| Fatal::Unavailable(format!("cannot bind the HTTP port {http_addr}: {e}")))?;
+    // Port 443: SNI pass-through, no decryption (FR-08, N2). Replaces sniproxy in the lancache
+    // deployment model.
+    let https_addr = SocketAddr::from(([0, 0, 0, 0], config.https_port));
+    let sni = SniProxy::bind(https_addr, sni_resolver, config.https_port)
+        .await
+        .map_err(|e| Fatal::Unavailable(format!("cannot bind the HTTPS port {https_addr}: {e}")))?;
+    tracing::info!(addr = %sni.addr(), "sni pass-through listening");
+
     readiness.set_listeners_bound(true);
 
     late_api.set(ApiState {
@@ -258,6 +268,14 @@ async fn run(config: Config) -> Result<(), Fatal> {
 
     tracing::info!(
         rejected_connections = connections.rejected(),
+        sni_spliced = sni
+            .stats()
+            .spliced
+            .load(std::sync::atomic::Ordering::Relaxed),
+        sni_refused = sni
+            .stats()
+            .refused
+            .load(std::sync::atomic::Ordering::Relaxed),
         "shutdown complete"
     );
     Ok(())
