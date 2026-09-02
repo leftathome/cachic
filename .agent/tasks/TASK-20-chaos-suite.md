@@ -13,8 +13,9 @@ bytes served" (NFR-7) is only a claim until something has tried hard to break it
 - [ ] Slow disk via cgroup IO throttling
 - [ ] Flaky upstream: 5xx, connection reset, stall mid-body
 - [ ] DNS failure and DNS returning the cache's own address
-- [ ] Sustained fill at 1, 2.5, 5 and 10 Gbit rates, asserting no slices are silently dropped
-      (`storage_queue_channel_overflow` stays at zero)
+- [ ] Sustained fill at the 200 Mbit/s success bar and at 1 Gbit, asserting no slices are silently
+      dropped (`storage_queue_channel_overflow` stays at zero). 2.5-10 Gbit as extended coverage
+      for tuned configurations
 
 ### Phase 2: Assertions
 - [ ] After every scenario: no partial slice readable, no corrupt byte served

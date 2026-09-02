@@ -89,11 +89,19 @@ The underlying benchmark error: inserting at memory speed with no backpressure, 
 cachic workload produces. Filling from a CDN over a domestic connection is tens of MiB/s, roughly
 two orders of magnitude below where dropping begins.
 
-### Sustainable ingest rate, and why foyer's defaults are not shippable
+### Sustainable ingest rate, and where the tuning knobs are
 
-The first version of this section reasoned that cachic fills at "tens of MiB/s over a domestic
-line", far below the drop threshold. That was wrong for the PRD's *primary* persona. Modern fibre
-runs 1-10 Gbit/s, and the homelab operator this product targets is on 10 GbE.
+**The success bar for upstream fill is 200 Mbit/s** (owner's call, 2026-09-01). That is about
+24 MiB/s, which sits roughly five times below the lowest rate tested here and about twenty-five
+times below the highest rate that retains everything on foyer's defaults. At the bar, this is a
+non-issue with a wide margin.
+
+It is measured and documented anyway because fibre at 1-10 Gbit/s is now ordinary, some operators
+will run well above the bar, and the failure is silent. Everything below is tuning guidance for
+those users, not a blocker for shipping.
+
+Note this concerns the **ingest** path only. Serving cached content to LAN clients is a different
+path with its own target (NFR-1, >= 1.1 GB/s) and is unaffected.
 
 Converted to fill rates and measured against foyer's defaults (1 flusher, 16 MiB buffer pool),
 512 MiB written into a 4 GiB disk tier with a deliberately small 64 MiB memory tier so RAM hits
@@ -106,8 +114,9 @@ cannot mask a dropped write:
 | 5 Gbit | 596 MiB/s | 100% |
 | **10 Gbit** | **1192 MiB/s** | **90.0%** |
 
-At 10 Gbit, one in ten slices is silently discarded. The client still gets its bytes at full speed;
-the cache simply does not keep them, and without the overflow metric nobody finds out.
+Defaults are clean through 5 Gbit. At 10 Gbit one slice in ten is silently discarded: the client
+still gets its bytes at full speed, the cache simply does not keep them, and without the overflow
+metric nobody finds out. That last property is why the metric matters more than the tuning does.
 
 It is entirely a configuration problem. At the same 1192 MiB/s target:
 
@@ -123,9 +132,12 @@ foyer's single default flusher was. Note also that raising `submit_queue_size_th
 nothing; an earlier sweep of 16/64/256/1024 MiB moved retention not at all. The queue is not the
 bottleneck, the drain is.
 
-**cachic must not ship foyer's defaults.** Minimum 2 flushers and a 64 MiB buffer pool; 4 and
-128 MiB costs little and leaves headroom. These belong in the configuration surface (TASK-07) and
-in the store wrapper (TASK-11).
+**Recommendation: ship 2 flushers and a 64 MiB buffer pool as the default**, and document the
+table above for operators tuning further. That is not required to meet the 200 Mbit/s bar - foyer's
+own defaults clear it with room to spare - but it costs almost nothing, covers every fibre tier up
+to 10 Gbit without the operator knowing the knob exists, and means the first person to plug this
+into a 10 GbE homelab does not quietly lose a tenth of their cache. The knobs belong in the
+configuration surface (TASK-07) with worked examples in the docs (TASK-32).
 
 Caveats: measured on a WSL2 virtual disk, not NVMe, and over 512 MiB rather than a sustained
 multi-hour fill with concurrent read load. Both should be repeated on the NUC.

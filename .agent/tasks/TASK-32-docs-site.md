@@ -14,6 +14,9 @@ is also where the migration story lives, which decides whether anyone actually s
 - [ ] README: what it is, 30-second compose start, links
 - [ ] `ARCHITECTURE.md` mirroring plan section 1, checked for currency in review
 - [ ] Docs build wired into CI so a broken link fails the build
+- [ ] Sizing and tuning page: index cost per entry, the memory arithmetic
+      (`READAHEAD_SLICES * SLICE_SIZE` per connection), and worked write-path examples for
+      1/2.5/5/10 Gbit upstreams from docs/benchmarks/m0
 
 ## Technical Decisions
 - The configuration reference is generated from the schema, never hand-maintained - a config doc

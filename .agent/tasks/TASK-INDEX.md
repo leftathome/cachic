@@ -22,11 +22,16 @@ go/no-go on Rust + foyer is **confirmed** (ADR 0001, ADR 0003). Throughput was m
 on a WSL2 box with origin, proxy and clients colocated, not the NUC, so the >= 8 Gbps criterion is
 untested rather than failed - it needs the reference hardware.
 
+**Success bar for upstream fill: 200 Mbit/s** (owner, 2026-09-01), roughly 24 MiB/s. Higher rates
+are a tuning story, not a gate. This bounds the ingest path only; serving hits to LAN clients keeps
+its own target (NFR-1).
+
 M0 initially reported a blocking store defect. That was a benchmark error: foyer drops disk writes
 when the writer outruns the flusher, and the harness wrote at 2.4 GB/s with no backpressure, a rate
 cachic never produces. See `docs/benchmarks/m0/README.md`. It leaves three obligations:
-TASK-13 must expose `storage_queue_channel_overflow`, TASK-20 must test prefill-rate fills, and the
-measurement harness should pace writes.
+TASK-13 must expose `storage_queue_channel_overflow`, TASK-20 must test fills at the success bar,
+and the measurement harness should pace writes. TASK-11 defaults above foyer's write-path settings
+so fibre users are covered without tuning.
 
 ## M1 - MVP proxy, v0.1 (weeks 3-6)
 

@@ -77,12 +77,14 @@ Three obligations follow, and they are not optional:
 1. **Expose `storage_queue_channel_overflow` and `storage_block_engine_enqueue_skip` through
    `/metrics`** (FR-50). A cache that silently declines to cache is the worst failure this product
    can have, and without these counters it is invisible. This is a TASK-13 requirement.
-2. **Do not ship foyer's defaults.** With 1 flusher and a 16 MiB buffer pool, a 10 Gbit fill
-   (1192 MiB/s) silently loses 10% of slices. Two flushers and a 64 MiB pool restore 100% at the
-   same rate; the device was never the limit. Below 5 Gbit the defaults are fine, but the primary
-   persona is a homelab on 10 GbE and fibre at 1-10 Gbit is now ordinary, so this is a mainstream
-   configuration rather than an edge case. Minimums belong in TASK-11 and the knobs in TASK-07.
-   Raising `submit_queue_size_threshold` alone does nothing - the drain rate is the constraint.
+2. **Default above foyer's write-path settings, and document the tuning.** The success bar for
+   upstream fill is 200 Mbit/s (~24 MiB/s), which foyer's defaults clear with roughly
+   twenty-five times headroom, so this is not a shipping blocker. But defaults are clean only
+   through 5 Gbit: at 10 Gbit (1192 MiB/s) one slice in ten is silently dropped, and fibre at that
+   tier exists. Shipping 2 flushers and a 64 MiB buffer pool costs almost nothing and covers every
+   tier to 10 Gbit; beyond that, operators tune. Knobs in TASK-07, worked examples in TASK-32.
+   Raising `submit_queue_size_threshold` alone does nothing - the drain rate is the constraint,
+   not the queue.
 3. **Do not benchmark at rates the product cannot generate.** The measurement harness should pace
    writes by default.
 
