@@ -43,7 +43,7 @@ so fibre users are covered without tuning.
 | [TASK-10](./TASK-10-upstream.md) | Upstream client, resolver and guards | Done |
 | [TASK-11](./TASK-11-store.md) | Store - foyer wrapper, slice codec, object index | Done |
 | [TASK-12](./TASK-12-orchestrator.md) | Orchestrator - probe, slice plan, pipeline | Done (no_ranges path is TASK-16) |
-| [TASK-13](./TASK-13-telemetry.md) | Telemetry - logs, metrics, health | Not started |
+| [TASK-13](./TASK-13-telemetry.md) | Telemetry - logs, metrics, health | Done |
 | [TASK-14](./TASK-14-testkit.md) | Testkit - mockcdn, differ, load generator | Not started |
 | [TASK-15](./TASK-15-packaging-v0.1.md) | Packaging v0.1 - image and compose | Not started |
 

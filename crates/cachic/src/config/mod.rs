@@ -260,6 +260,13 @@ impl Config {
         Ok(rules)
     }
 
+    /// Parse from an explicit argument list. Exists so tests can build a configuration without
+    /// touching the process environment.
+    #[doc(hidden)]
+    pub fn try_parse_from_for_test(args: &[&str]) -> Result<Self, clap::Error> {
+        <Self as clap::Parser>::try_parse_from(args)
+    }
+
     /// Per-connection memory implied by the read-ahead window, for the sizing guide and logs.
     pub fn readahead_bytes_per_connection(&self) -> u64 {
         self.cache_slice_size * self.readahead_slices as u64

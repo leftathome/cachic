@@ -35,6 +35,9 @@ regex = "1"
 # See upstream::resolver and ADR 0008.
 hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
 redb = "4"
+prometheus = { version = "0.14", default-features = false }
+mixtrics = { version = "0.2", features = ["prometheus_0_14"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 
 [profile.release]
 lto = true

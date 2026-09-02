@@ -13,12 +13,13 @@
 //!
 //! See `docs/benchmarks/m0/README.md`.
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use foyer::{
     BlockEngineConfig, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
     HybridCachePolicy, PsyncIoEngineConfig,
 };
+use mixtrics::registry::prometheus_0_14::PrometheusMetricsRegistry;
 
 use super::slice::{SliceKey, SliceValue};
 
@@ -104,6 +105,19 @@ impl std::fmt::Debug for SliceStore {
 
 impl SliceStore {
     pub async fn open(dir: &Path, config: &StoreConfig) -> Result<Self, StoreError> {
+        Self::open_with_metrics(dir, config, None).await
+    }
+
+    /// Open with foyer reporting into our Prometheus registry.
+    ///
+    /// This is how `foyer_storage_queue_channel_overflow` reaches `/metrics`. That counter is the
+    /// only way an operator learns the cache has silently stopped caching because writes are
+    /// outrunning the flushers, which is the failure M0 spent a day misdiagnosing.
+    pub async fn open_with_metrics(
+        dir: &Path,
+        config: &StoreConfig,
+        registry: Option<Arc<PrometheusMetricsRegistry>>,
+    ) -> Result<Self, StoreError> {
         std::fs::create_dir_all(dir).map_err(|source| StoreError::Directory {
             path: dir.to_owned(),
             source,
@@ -114,8 +128,11 @@ impl SliceStore {
             .build()
             .map_err(StoreError::Open)?;
 
-        let inner = HybridCacheBuilder::new()
-            .with_name("cachic")
+        let mut builder = HybridCacheBuilder::new().with_name("cachic");
+        if let Some(registry) = registry {
+            builder = builder.with_metrics_registry(Box::new((*registry).clone()));
+        }
+        let inner = builder
             // Write on insertion rather than on eviction: a restart must not lose everything the
             // memory tier happened to be holding (FR-43).
             .with_policy(HybridCachePolicy::WriteOnInsertion)
@@ -332,6 +349,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ok.payload, Bytes::from_static(b"recovered"));
+        s.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn foyers_drop_signal_reaches_our_metrics() {
+        // The M0 obligation, proven rather than assumed: when writes outrun the flushers, foyer
+        // discards them silently, and this counter is the only way an operator finds out.
+        //
+        // foyer reports it as a label rather than its own metric -
+        // foyer_storage_inner_op_total{op="channel_overflow"} - and a Prometheus label only
+        // materialises once incremented. So the test deliberately causes drops, which also
+        // proves the signal actually fires rather than merely being registered.
+        let dir = Scratch::new("store-foyer-metrics");
+        let (metrics, foyer_registry) = crate::telemetry::metrics::Metrics::new().unwrap();
+        let s = SliceStore::open_with_metrics(
+            dir.path(),
+            &StoreConfig {
+                memory_bytes: 4 * 1024 * 1024,
+                disk_bytes: 256 * 1024 * 1024,
+                block_bytes: 4 * 1024 * 1024,
+                // foyer's own defaults, deliberately: this is the configuration we do not ship.
+                flushers: 1,
+                buffer_pool_bytes: 1024 * 1024,
+                direct_io: false,
+            },
+            Some(foyer_registry),
+        )
+        .await
+        .unwrap();
+
+        // Write far faster than a 1 MiB buffer pool can drain.
+        let object = object_id("/overflow");
+        let payload = vec![0u8; 256 * 1024];
+        for i in 0..256u32 {
+            let v = SliceValue::new(
+                SliceHeader {
+                    slice_size: 256 * 1024,
+                    total_len: 256 * 256 * 1024,
+                    generation: 0,
+                    etag: Some("\"o\"".into()),
+                    last_modified: None,
+                    content_type: None,
+                },
+                Bytes::from(payload.clone()),
+            );
+            s.insert(SliceKey::new(object, 0, i), v);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let text = metrics.render().unwrap();
+        // The families must be exported whether or not anything has been dropped, since that is
+        // what a dashboard and an alert rule reference.
+        assert!(
+            text.contains("foyer_storage_inner_op_total"),
+            "the family carrying channel_overflow is missing"
+        );
+        assert!(
+            text.contains("foyer_storage_block_engine_op_total"),
+            "the family carrying enqueue_skip is missing"
+        );
+        // And under this deliberately undersized configuration, the drop signal must actually
+        // fire. If it does not, either foyer stopped dropping or the label moved.
+        assert!(
+            text.contains("channel_overflow"),
+            "writes outran a 1 MiB buffer pool but no drop was reported; \
+             the alerting signal for silent cache loss is not working"
+        );
         s.close().await.unwrap();
     }
 

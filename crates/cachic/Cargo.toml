@@ -30,6 +30,9 @@ serde_json.workspace = true
 regex.workspace = true
 hickory-resolver.workspace = true
 redb.workspace = true
+prometheus.workspace = true
+mixtrics.workspace = true
+axum.workspace = true
 
 [[bin]]
 name = "cachic"
