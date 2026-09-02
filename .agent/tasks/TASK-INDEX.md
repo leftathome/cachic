@@ -41,7 +41,7 @@ so fibre users are covered without tuning.
 | [TASK-08](./TASK-08-services.md) | Services - cache-domains, matcher, key normalisation | Done |
 | [TASK-09](./TASK-09-proxy.md) | Proxy - server, router, headers, range parsing | Modules done; server wiring in TASK-12 |
 | [TASK-10](./TASK-10-upstream.md) | Upstream client, resolver and guards | Resolver and guard done; client pool in TASK-12 |
-| [TASK-11](./TASK-11-store.md) | Store - foyer wrapper, slice codec, object index | Not started |
+| [TASK-11](./TASK-11-store.md) | Store - foyer wrapper, slice codec, object index | Done |
 | [TASK-12](./TASK-12-orchestrator.md) | Orchestrator - probe, slice plan, pipeline | Not started |
 | [TASK-13](./TASK-13-telemetry.md) | Telemetry - logs, metrics, health | Not started |
 | [TASK-14](./TASK-14-testkit.md) | Testkit - mockcdn, differ, load generator | Not started |
