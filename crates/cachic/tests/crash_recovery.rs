@@ -50,6 +50,7 @@ fn spawn(
         .env("ALLOW_PRIVATE_UPSTREAMS", "true")
         .env("HTTP_PORT", http_port.to_string())
         .env("ADMIN_PORT", admin_port.to_string())
+        .env("HTTPS_PORT", "0")
         .env("CACHE_DISK_SIZE", "64m")
         .env("CACHE_MEM_SIZE", "8m")
         .env("CACHE_SLICE_SIZE", SLICE)

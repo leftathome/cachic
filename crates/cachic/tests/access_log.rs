@@ -60,6 +60,7 @@ async fn capture_log(tag: &str, format: &str, http: u16, admin: u16) -> String {
             .env("ALLOW_PRIVATE_UPSTREAMS", "true")
             .env("HTTP_PORT", http.to_string())
             .env("ADMIN_PORT", admin.to_string())
+            .env("HTTPS_PORT", "0")
             .env("CACHE_DISK_SIZE", "64m")
             .env("CACHE_MEM_SIZE", "8m")
             .env("LOG_FORMAT", format)

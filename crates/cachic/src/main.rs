@@ -206,13 +206,31 @@ async fn run(config: Config) -> Result<(), Fatal> {
         }),
     )
     .await
-    .map_err(|e| Fatal::Unavailable(format!("cannot bind the HTTP port {http_addr}: {e}")))?;
+    .map_err(|e| {
+        let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
+            "\n  Ports below 1024 need CAP_NET_BIND_SERVICE when running as a non-root user."
+        } else {
+            ""
+        };
+        Fatal::Unavailable(format!("cannot bind the HTTP port {http_addr}: {e}{hint}"))
+    })?;
     // Port 443: SNI pass-through, no decryption (FR-08, N2). Replaces sniproxy in the lancache
     // deployment model.
     let https_addr = SocketAddr::from(([0, 0, 0, 0], config.https_port));
     let sni = SniProxy::bind(https_addr, sni_resolver, config.https_port)
         .await
-        .map_err(|e| Fatal::Unavailable(format!("cannot bind the HTTPS port {https_addr}: {e}")))?;
+        .map_err(|e| {
+            let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                "\n  Ports below 1024 need CAP_NET_BIND_SERVICE when running as a non-root user. \
+                 The container image and the Helm chart grant it; a bare binary needs \
+                 `setcap cap_net_bind_service=+ep`, a port mapping, or HTTPS_PORT set higher."
+            } else {
+                ""
+            };
+            Fatal::Unavailable(format!(
+                "cannot bind the HTTPS port {https_addr}: {e}{hint}"
+            ))
+        })?;
     tracing::info!(addr = %sni.addr(), "sni pass-through listening");
 
     readiness.set_listeners_bound(true);
