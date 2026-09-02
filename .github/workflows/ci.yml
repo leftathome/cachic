@@ -87,7 +87,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-fuzz
+      # The `@cargo-fuzz` shorthand is not a real alias; only some tools have one, and using it
+      # installed nothing while the workflow still reported the step as successful.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Verify cargo-fuzz is present
+        run: cargo fuzz --version
       - name: Fuzz ${{ matrix.target }}
         # Short on every push, long on a schedule. Long enough to catch a regression that makes a
         # parser trivially reachable; the deep search is the nightly job's work.
