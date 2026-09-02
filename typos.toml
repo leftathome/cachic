@@ -3,4 +3,10 @@
 lancache = "lancache"
 
 [files]
-extend-exclude = ["LICENSE", ".agent/grafana/navigator-dashboard.json"]
+extend-exclude = [
+    "LICENSE",
+    ".agent/grafana/navigator-dashboard.json",
+    # Fuzz corpora are deliberately malformed input, not prose.
+    "fuzz/corpus/",
+    "fuzz/artifacts/",
+]

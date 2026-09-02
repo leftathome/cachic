@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Nightly, for the long fuzz runs.
+    - cron: "0 3 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -72,6 +75,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: crate-ci/typos@master
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [range_header, content_range, config_units, cache_domains]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Fuzz ${{ matrix.target }}
+        # Short on every push, long on a schedule. Long enough to catch a regression that makes a
+        # parser trivially reachable; the deep search is the nightly job's work.
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=${{ github.event_name == 'schedule' && 1800 || 60 }}
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
 
   docs:
     name: Docs build

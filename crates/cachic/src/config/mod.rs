@@ -200,6 +200,17 @@ impl Config {
             requirement,
         };
 
+        // A slice smaller than this is not a cache tuning, it is a mistake: per-slice overhead
+        // would dominate, and slice indices are u32, so a tiny slice makes large objects
+        // unaddressable. 4 KiB is a filesystem page and well below anything sensible.
+        const MIN_SLICE_SIZE: u64 = 4096;
+        if self.cache_slice_size < MIN_SLICE_SIZE {
+            return Err(invalid(
+                "CACHE_SLICE_SIZE",
+                units::format_size(self.cache_slice_size),
+                "at least 4 KiB: smaller slices are dominated by per-slice overhead, and the u32                  slice index would make large objects unaddressable",
+            ));
+        }
         if self.cache_slice_size == 0 || !self.cache_slice_size.is_power_of_two() {
             return Err(invalid(
                 "CACHE_SLICE_SIZE",
@@ -353,6 +364,20 @@ mod tests {
         let c = Config::parse_from(["cachic", "--cache-slice-size", "1000000"]);
         let err = c.validate().unwrap_err();
         assert!(err.to_string().contains("power of two"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_pathologically_small_slice_size() {
+        // 1 is a power of two, so the power-of-two check alone let it through. Fuzzing showed a
+        // 1-byte slice makes objects over 4 GiB unaddressable by a u32 slice index.
+        for size in ["1", "512", "2048"] {
+            let c = Config::parse_from(["cachic", "--cache-slice-size", size]);
+            let err = c.validate().unwrap_err();
+            assert!(err.to_string().contains("4 KiB"), "slice {size}: {err}");
+        }
+        Config::parse_from(["cachic", "--cache-slice-size", "4096"])
+            .validate()
+            .unwrap();
     }
 
     #[test]

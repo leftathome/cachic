@@ -149,13 +149,32 @@ impl SlicePlan {
     }
 }
 
+/// The largest object addressable at a given slice size.
+///
+/// Slice indices are `u32`, so an object longer than `u32::MAX + 1` slices cannot be addressed.
+/// At the 1 MiB default that is 4 PiB, which is not a real constraint; at a pathologically small
+/// slice size it is reachable, which is why [`crate::config::Config::validate`] enforces a
+/// minimum slice size.
+pub fn max_addressable_len(slice_size: u32) -> u64 {
+    (u32::MAX as u64 + 1) * slice_size as u64
+}
+
 /// Map a byte range onto slice indices.
+///
+/// Indices are computed in `u64` and saturated, not cast. Casting was a real defect: for an
+/// object large enough that `end / slice_size` exceeds `u32::MAX`, `as u32` truncates silently
+/// and produces `first > last` - an empty plan for a non-empty request, found by fuzzing with
+/// `bytes=888888888-888888888888888888`. Saturating keeps the plan well-formed; the range that
+/// could reach here at all is rejected by config validation.
 pub fn plan(range: ByteRange, slice_size: u32) -> SlicePlan {
     debug_assert!(slice_size > 0, "slice size must be non-zero");
-    let s = slice_size as u64;
+    let s = slice_size.max(1) as u64;
+    let to_index = |byte: u64| -> u32 { (byte / s).min(u32::MAX as u64) as u32 };
+    let first = to_index(range.start);
+    let last = to_index(range.end).max(first);
     SlicePlan {
-        first: (range.start / s) as u32,
-        last: (range.end / s) as u32,
+        first,
+        last,
         slice_size,
     }
 }
@@ -289,6 +308,39 @@ mod tests {
             1024,
         );
         assert_eq!((p.first, p.last, p.count()), (0, 1, 2));
+    }
+
+    #[test]
+    fn a_plan_is_never_inverted_however_large_the_range() {
+        // Found by fuzzing: casting `end / slice_size` to u32 truncates for very large objects
+        // and yields first > last, which is an empty plan for a non-empty request.
+        let wanted = ByteRange {
+            start: 888_888_888,
+            end: 888_888_888_888_888_888,
+        };
+        let p = plan(wanted, 1);
+        assert!(p.first <= p.last, "plan inverted: {p:?}");
+        assert!(p.count() >= 1);
+    }
+
+    #[test]
+    fn indices_saturate_rather_than_wrap() {
+        let p = plan(
+            ByteRange {
+                start: 0,
+                end: u64::MAX - 1,
+            },
+            1,
+        );
+        assert_eq!(p.last, u32::MAX);
+        assert!(p.first <= p.last);
+    }
+
+    #[test]
+    fn reports_the_largest_addressable_object() {
+        // At the 1 MiB default this is 4 PiB, which is why the u32 index is not a real limit.
+        assert_eq!(max_addressable_len(1 << 20), (u32::MAX as u64 + 1) << 20);
+        assert!(max_addressable_len(1 << 20) > 4_000_000_000_000_000);
     }
 
     #[test]

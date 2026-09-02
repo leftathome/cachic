@@ -34,3 +34,5 @@ target
 .agent/.nav-read-counter.json
 .agent/.nav-workflow-state.json
 .agent/.features-shown-*
+fuzz/target
+fuzz/artifacts

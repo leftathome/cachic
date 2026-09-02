@@ -1,0 +1,42 @@
+[package]
+name = "cachic-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cachic = { path = "../crates/cachic" }
+
+[[bin]]
+name = "range_header"
+path = "fuzz_targets/range_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "content_range"
+path = "fuzz_targets/content_range.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cache_domains"
+path = "fuzz_targets/cache_domains.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_units"
+path = "fuzz_targets/config_units.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

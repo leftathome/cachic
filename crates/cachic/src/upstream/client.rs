@@ -66,6 +66,24 @@ impl UpstreamResponse {
         self.headers.get(name).and_then(|v| v.to_str().ok())
     }
 
+    /// Build a response carrying only a `Content-Range`, for fuzzing and tests.
+    ///
+    /// Exists so the fuzz crate does not have to pin matching versions of hyper and bytes just to
+    /// construct one of these.
+    #[doc(hidden)]
+    pub fn for_test_with_content_range(value: &str) -> Option<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "content-range",
+            hyper::header::HeaderValue::from_str(value).ok()?,
+        );
+        Some(Self {
+            status: StatusCode::PARTIAL_CONTENT,
+            headers,
+            body: Bytes::new(),
+        })
+    }
+
     /// Total object length from a `Content-Range: bytes a-b/total`.
     pub fn content_range_total(&self) -> Option<u64> {
         let value = self.header("content-range")?;

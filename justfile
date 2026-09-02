@@ -29,6 +29,11 @@ bench:
 config-reference:
     cargo run --quiet --example config-reference > docs/configuration.md
 
+# Fuzz one target for a while. Needs nightly: cargo-fuzz uses libFuzzer.
+#   just fuzz range_header 300
+fuzz TARGET SECONDS="60":
+    cargo +nightly fuzz run {{TARGET}} -- -max_total_time={{SECONDS}}
+
 # Performance gate. Release only: debug builds measure ~20% low and the thresholds assume
 # optimised code. Floor is a hard failure, target is a loud warning.
 # Override per host with CACHIC_PERF_FLOOR_GBPS / CACHIC_PERF_TARGET_GBPS.
