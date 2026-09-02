@@ -36,6 +36,18 @@ glibc, where `libc::Ioctl` is `u64`. The upstream fix is one line.
 Until it lands, binaries are glibc and the image uses `distroless/cc`. This is the outstanding
 part of FR-73.
 
+## Enabling the documentation site
+
+The book builds on every push and is uploaded as a Pages artifact, but publishing is off until
+Pages is enabled on the repository — turning it on creates a public website, which is a decision
+rather than a default:
+
+```sh
+gh api -X POST repos/leftathome/cachic/pages -f 'build_type=workflow'
+```
+
+Until then the `Publish docs` job reports its own failure without holding the build red.
+
 ## Verifying a release
 
 ```sh

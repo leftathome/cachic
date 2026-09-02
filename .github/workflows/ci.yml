@@ -123,6 +123,12 @@ jobs:
     needs: docs
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Non-blocking until Pages is enabled on the repository. Enabling it publishes a public
+    # website, which is a decision for the repository owner rather than something CI should do on
+    # its own; until then this job reports its own failure without holding the build red.
+    #
+    #   gh api -X POST repos/OWNER/REPO/pages -f 'build_type=workflow'
+    continue-on-error: true
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
