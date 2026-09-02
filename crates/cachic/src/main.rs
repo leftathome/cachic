@@ -31,6 +31,15 @@ const EXIT_CONFIG: u8 = 78;
 /// `EX_UNAVAILABLE`: a resource we need is not available.
 const EXIT_UNAVAILABLE: u8 = 69;
 
+/// NFR-4's client connection ceiling.
+const MAX_CLIENT_CONNECTIONS: u64 = 10_000;
+
+/// How long to wait for in-flight requests before exiting anyway.
+///
+/// Shorter than a typical Kubernetes terminationGracePeriodSeconds (30s), so the process exits
+/// on its own terms rather than being killed part-way through.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let config = Config::parse();
@@ -137,6 +146,9 @@ async fn run(config: Config) -> Result<(), Fatal> {
         compiled.insert(name, compiled_rule);
     }
 
+    let connections = cachic::proxy::limits::ConnectionLimit::new(MAX_CLIENT_CONNECTIONS);
+    let drain = cachic::proxy::shutdown::Drain::new();
+
     let http_addr = SocketAddr::from(([0, 0, 0, 0], config.http_port));
     let server = Server::bind(
         http_addr,
@@ -147,6 +159,8 @@ async fn run(config: Config) -> Result<(), Fatal> {
             compiled: Arc::new(compiled),
             hostname: hostname(),
             passthrough_unknown_hosts: config.passthrough_unknown_hosts,
+            connections: connections.clone(),
+            drain: drain.clone(),
         }),
     )
     .await
@@ -163,12 +177,32 @@ async fn run(config: Config) -> Result<(), Fatal> {
     );
 
     shutdown_signal().await;
-    // Fail readiness before doing anything else, so traffic moves away while in-flight work
-    // finishes (FR-62). Full graceful drain is TASK-18.
+
+    // Readiness fails first, before anything else happens, so a load balancer moves traffic away
+    // while in-flight work finishes rather than after (FR-62).
     readiness.begin_drain();
-    tracing::info!("draining");
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    tracing::info!("shutdown complete");
+    tracing::info!(
+        inflight = drain.inflight(),
+        timeout_secs = DRAIN_TIMEOUT.as_secs(),
+        "draining"
+    );
+
+    let finished = drain.drain(DRAIN_TIMEOUT).await;
+    if finished {
+        tracing::info!("in-flight requests completed");
+    } else {
+        // Not a failure to handle, a fact to record. Kubernetes will SIGKILL after its grace
+        // period regardless, so exiting deliberately beats being killed mid-flush.
+        tracing::warn!(
+            inflight = drain.inflight(),
+            "drain timed out; exiting with work still in flight"
+        );
+    }
+
+    tracing::info!(
+        rejected_connections = connections.rejected(),
+        "shutdown complete"
+    );
     Ok(())
 }
 

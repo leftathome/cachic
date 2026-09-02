@@ -4,10 +4,9 @@
 //! and random ranges, the bytes a client receives through the cache must equal the bytes the
 //! origin would have sent.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use cachic::{
-    config::rules::Rules,
     orchestrator::Orchestrator,
     proxy::server::{Server, ServerConfig},
     services::{domains::DomainList, key::CompiledRule, matcher::Matcher},
@@ -34,6 +33,7 @@ struct Harness {
     origin: MockCdn,
     server: Server,
     orchestrator: Arc<Orchestrator>,
+    drain: Arc<cachic::proxy::shutdown::Drain>,
 }
 
 impl Harness {
@@ -72,14 +72,12 @@ impl Harness {
             &DomainList::parse(index_json, &files).unwrap(),
         ));
 
-        let config = Arc::new(ServerConfig {
-            orchestrator: orchestrator.clone(),
+        let config = Arc::new(ServerConfig::with_defaults(
+            orchestrator.clone(),
             matcher,
-            rules: Arc::new(Rules::default()),
-            compiled: Arc::new(HashMap::new()),
-            hostname: "test-cache".into(),
-            passthrough_unknown_hosts: false,
-        });
+            "test-cache",
+        ));
+        let drain = config.drain.clone();
         let server = Server::bind("127.0.0.1:0".parse().unwrap(), config)
             .await
             .unwrap();
@@ -89,6 +87,7 @@ impl Harness {
             origin,
             server,
             orchestrator,
+            drain,
         }
     }
 
@@ -461,6 +460,30 @@ async fn an_unsatisfiable_range_is_416() {
         .unwrap();
     assert_eq!(r.status(), 416);
     assert_eq!(r.headers()["content-range"], format!("bytes */{size}"));
+}
+
+#[tokio::test]
+async fn requests_are_refused_once_draining() {
+    // FR-62. A keep-alive connection must not be able to extend a drain indefinitely by issuing
+    // request after request.
+    let h = Harness::start("m2-drain", CdnConfig::default()).await;
+    let path = MockCdn::object_path("draining", 10_000);
+
+    let before = h.request(&path).send().await.unwrap();
+    assert_eq!(before.status(), 200);
+
+    let finished = h.drain.drain(Duration::from_millis(200)).await;
+    assert!(
+        finished,
+        "nothing was in flight, so the drain should complete"
+    );
+
+    let after = h.request(&path).send().await.unwrap();
+    assert_eq!(
+        after.status(),
+        503,
+        "requests must be refused once draining has begun"
+    );
 }
 
 #[tokio::test]

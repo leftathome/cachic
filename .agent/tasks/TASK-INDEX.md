@@ -63,7 +63,7 @@ the reason and the one-line upstream fix are documented in the Dockerfile.
 |---|---|---|
 | [TASK-16](./TASK-16-no-ranges-filler.md) | no_ranges path and object-level filler | Done |
 | [TASK-17](./TASK-17-generations-stale-on-error.md) | Generations, stale-on-error, If-Range | Done |
-| [TASK-18](./TASK-18-lifecycle-limits.md) | Disconnect semantics, graceful shutdown, limits | Not started |
+| [TASK-18](./TASK-18-lifecycle-limits.md) | Disconnect semantics, graceful shutdown, limits | Done |
 | [TASK-19](./TASK-19-admin-api.md) | Admin API and disk guard | Not started |
 | [TASK-20](./TASK-20-chaos-suite.md) | Chaos suite | Not started |
 | [TASK-21](./TASK-21-fuzzing.md) | Fuzzing in CI | Not started |

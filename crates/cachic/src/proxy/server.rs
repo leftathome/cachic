@@ -48,6 +48,30 @@ pub struct ServerConfig {
     pub compiled: Arc<std::collections::HashMap<String, CompiledRule>>,
     pub hostname: String,
     pub passthrough_unknown_hosts: bool,
+    /// Bounds simultaneously open client connections (NFR-4).
+    pub connections: Arc<crate::proxy::limits::ConnectionLimit>,
+    /// Tracks in-flight requests so shutdown can wait for them (FR-62).
+    pub drain: Arc<crate::proxy::shutdown::Drain>,
+}
+
+impl ServerConfig {
+    /// Defaults for tests and callers that do not care about limits.
+    pub fn with_defaults(
+        orchestrator: Arc<Orchestrator>,
+        matcher: Arc<Matcher>,
+        hostname: impl Into<String>,
+    ) -> Self {
+        Self {
+            orchestrator,
+            matcher,
+            rules: Arc::new(Rules::default()),
+            compiled: Arc::new(std::collections::HashMap::new()),
+            hostname: hostname.into(),
+            passthrough_unknown_hosts: false,
+            connections: crate::proxy::limits::ConnectionLimit::new(10_000),
+            drain: crate::proxy::shutdown::Drain::new(),
+        }
+    }
 }
 
 pub struct Server {
@@ -74,9 +98,25 @@ impl Server {
                     }
                 };
                 let Ok((stream, _)) = accepted else { continue };
+
+                // Refuse rather than queue at the connection limit. A queued connection looks
+                // alive to the client while making no progress, and a game client that times out
+                // silently is worse than one that fails fast and retries.
+                let Some(permit) = config.connections.try_acquire() else {
+                    tracing::warn!(
+                        open = config.connections.open(),
+                        max = config.connections.max(),
+                        "refusing connection: at the connection limit"
+                    );
+                    drop(stream);
+                    continue;
+                };
+
                 let io = TokioIo::new(stream);
                 let config = config.clone();
                 tokio::spawn(async move {
+                    // The permit is released when this task ends, however it ends.
+                    let _permit = permit;
                     let service = service_fn(move |req| handle(req, config.clone()));
                     // Errors here are client disconnects; the proxy does not care.
                     let _ = http1::Builder::new().serve_connection(io, service).await;
@@ -125,6 +165,14 @@ async fn handle(
     req: Request<hyper::body::Incoming>,
     config: Arc<ServerConfig>,
 ) -> Result<Response<BoxedBody>, Infallible> {
+    // Refuse new requests once draining, so a keep-alive connection cannot extend the drain
+    // indefinitely by issuing request after request.
+    let Some(_guard) = config.drain.enter() else {
+        return Ok(text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cachic is shutting down\n",
+        ));
+    };
     match serve(req, config).await {
         Ok(response) => Ok(response),
         Err(e) => {
