@@ -1,0 +1,137 @@
+# cachic Helm values.
+#
+# A homelab install should need no more than a handful of these: the load-balancer address the
+# DNS server points at, and where the cache data lives.
+
+image:
+  repository: ghcr.io/leftathome/cachic
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# One replica, always. Two replicas sharing a ReadWriteOnce volume cannot both mount it, and two
+# replicas with separate volumes halve the hit rate while doubling upstream traffic. The
+# deployment strategy is Recreate for the same reason: a rolling update would need the volume
+# attached to two pods at once.
+replicaCount: 1
+
+service:
+  # LoadBalancer so the DNS server has a stable address to answer with. ClusterIP plus
+  # hostNetwork is the alternative for clusters without a load-balancer implementation.
+  type: LoadBalancer
+  # The LAN address clients will be sent to. Set this.
+  loadBalancerIP: ""
+  # MetalLB or Cilium LB-IPAM annotations go here.
+  annotations: {}
+  # Local, not Cluster: preserves the client source address, which the access log and per-client
+  # metrics need. It also avoids a second hop through another node.
+  externalTrafficPolicy: Local
+  ports:
+    http: 80
+    https: 443
+
+# An alternative to a LoadBalancer service. Binds the host's ports directly.
+hostNetwork: false
+
+cache:
+  diskSize: 1000g
+  memSize: 2g
+  maxAge: 3560d
+  sliceSize: 1m
+  minFreeDisk: 10g
+  # Prefetch this many slices ahead. Per-connection memory is this times sliceSize.
+  readaheadSlices: 4
+
+# Public resolvers. Deliberately NOT the lancache DNS server: resolving CDN hostnames through the
+# server that points at this cache would loop every fetch back into itself.
+upstreamDns:
+  - 1.1.1.1
+  - 1.0.0.1
+
+persistence:
+  enabled: true
+  # Read the storage note in the chart README before choosing. A replicated volume is the wrong
+  # shape for a cache.
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  # Larger than cache.diskSize: the object index and filesystem overhead live here too.
+  size: 1100Gi
+  existingClaim: ""
+
+logging:
+  # json is the supported format. lancache emits monolithic's cachelog for existing dashboards.
+  format: json
+  level: info
+
+admin:
+  port: 9090
+  # Bearer token for the admin API. Empty means unauthenticated, which is only safe because the
+  # admin port is not exposed by the Service.
+  token: ""
+  # Reference an existing Secret instead of putting the token in values.
+  existingSecret: ""
+  existingSecretKey: token
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 30s
+  grafanaDashboard:
+    enabled: false
+    labels:
+      grafana_dashboard: "1"
+
+# Per-service rules, rendered into a ConfigMap and mounted as the rules file.
+serviceRules: {}
+
+resources:
+  requests:
+    cpu: 500m
+    # Should exceed cache.memSize plus the object index, which is roughly 400 bytes per stored
+    # slice - about 760Mi for a 2TB cache at 1m slices.
+    memory: 3Gi
+  limits:
+    memory: 4Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+    # Required to bind 80 and 443 as a non-root user.
+    add: ["NET_BIND_SERVICE"]
+
+# The app resolves upstreams through upstreamDns regardless of this, so cluster DNS settings
+# cannot reintroduce the resolution loop.
+dnsPolicy: ClusterFirst
+dnsConfig: {}
+
+livenessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  # Generous: a large cache directory takes time to open, and restarting mid-recovery is exactly
+  # wrong. The admin port binds before the store opens so this probe answers throughout.
+  failureThreshold: 6
+
+readinessProbe:
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  failureThreshold: 3
+
+# Seconds to finish in-flight requests before SIGKILL. The process drains within 20s, so this
+# leaves headroom.
+terminationGracePeriodSeconds: 30

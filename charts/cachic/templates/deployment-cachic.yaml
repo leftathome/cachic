@@ -1,0 +1,144 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cachic.fullname" . }}
+  labels:
+    {{- include "cachic.labels" . | nindent 4 }}
+spec:
+  # Fixed at one. Two replicas cannot share a ReadWriteOnce volume, and two replicas with
+  # separate volumes halve the hit rate while doubling upstream traffic.
+  replicas: 1
+  strategy:
+    # Not RollingUpdate: that would need the volume attached to two pods simultaneously.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "cachic.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cachic.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{- toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        # Roll the pod when the rules change, since they are read at startup.
+        checksum/rules: {{ toYaml .Values.serviceRules | sha256sum }}
+        {{- with .Values.podAnnotations }}{{- toYaml . | nindent 8 }}{{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      hostNetwork: {{ .Values.hostNetwork }}
+      dnsPolicy: {{ if .Values.hostNetwork }}ClusterFirstWithHostNet{{ else }}{{ .Values.dnsPolicy }}{{ end }}
+      {{- with .Values.dnsConfig }}
+      dnsConfig: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+      containers:
+        - name: cachic
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+            allowPrivilegeEscalation: {{ .Values.securityContext.allowPrivilegeEscalation }}
+            capabilities:
+              {{- toYaml .Values.securityContext.capabilities | nindent 14 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.ports.http }}
+              protocol: TCP
+            - name: https
+              containerPort: {{ .Values.service.ports.https }}
+              protocol: TCP
+            - name: admin
+              containerPort: {{ .Values.admin.port }}
+              protocol: TCP
+          env:
+            - name: CACHE_DATA_DIR
+              value: /data/cache
+            - name: CACHE_DISK_SIZE
+              value: {{ .Values.cache.diskSize | quote }}
+            - name: CACHE_MEM_SIZE
+              value: {{ .Values.cache.memSize | quote }}
+            - name: CACHE_MAX_AGE
+              value: {{ .Values.cache.maxAge | quote }}
+            - name: CACHE_SLICE_SIZE
+              value: {{ .Values.cache.sliceSize | quote }}
+            - name: MIN_FREE_DISK
+              value: {{ .Values.cache.minFreeDisk | quote }}
+            - name: READAHEAD_SLICES
+              value: {{ .Values.cache.readaheadSlices | quote }}
+            - name: HTTP_PORT
+              value: {{ .Values.service.ports.http | quote }}
+            - name: HTTPS_PORT
+              value: {{ .Values.service.ports.https | quote }}
+            - name: ADMIN_PORT
+              value: {{ .Values.admin.port | quote }}
+            # Space-separated, matching monolithic's spelling.
+            - name: UPSTREAM_DNS
+              value: {{ join " " .Values.upstreamDns | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.logging.format | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logging.level | quote }}
+            {{- if .Values.serviceRules }}
+            - name: CACHE_RULES_FILE
+              value: /etc/cachic/rules.toml
+            {{- end }}
+            {{- if or .Values.admin.token .Values.admin.existingSecret }}
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.admin.existingSecret | default (include "cachic.fullname" .) }}
+                  key: {{ .Values.admin.existingSecretKey }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/cache
+            {{- if .Values.serviceRules }}
+            - name: rules
+              mountPath: /etc/cachic
+              readOnly: true
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "cachic.claimName" . }}
+          {{- else }}
+          # Without persistence the cache is lost on every restart, which defeats the point.
+          # Present only for ephemeral testing.
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.serviceRules }}
+        - name: rules
+          configMap:
+            name: {{ include "cachic.fullname" . }}-rules
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

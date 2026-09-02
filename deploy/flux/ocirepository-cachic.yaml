@@ -1,0 +1,13 @@
+# The chart, pulled from an OCI registry. Flux polls this for new versions.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: cachic
+  namespace: cachic
+spec:
+  interval: 30m
+  url: oci://ghcr.io/leftathome/charts/cachic
+  ref:
+    # Pin a range rather than a floating tag: an unattended cache upgrading itself across a major
+    # version is not what anyone wants at 3am.
+    semver: ">=0.1.0 <0.2.0"

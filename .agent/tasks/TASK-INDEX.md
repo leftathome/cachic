@@ -78,8 +78,8 @@ homelab and real clients, so it belongs with TASK-33.
 
 | Task | Title | Status |
 |---|---|---|
-| [TASK-22](./TASK-22-helm-chart.md) | Helm chart | Not started |
-| [TASK-23](./TASK-23-flux-k8s-docs.md) | Flux example and Kubernetes documentation | Not started |
+| [TASK-22](./TASK-22-helm-chart.md) | Helm chart | Done (kind install is CI's job) |
+| [TASK-23](./TASK-23-flux-k8s-docs.md) | Flux example and Kubernetes documentation | Done (Talos install needs the cluster) |
 | [TASK-24](./TASK-24-lancache-log-compat.md) | lancache access-log format and ecosystem compatibility | Not started |
 | [TASK-25](./TASK-25-benchmark-harness.md) | Benchmark harness and parity report | Not started |
 | [TASK-26](./TASK-26-release-pipeline.md) | Release pipeline | Not started |

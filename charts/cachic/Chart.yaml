@@ -1,0 +1,16 @@
+apiVersion: v2
+name: cachic
+description: HTTP caching proxy for game-distribution and OS-update CDN traffic
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/leftathome/cachic
+sources:
+  - https://github.com/leftathome/cachic
+keywords:
+  - cache
+  - lancache
+  - steam
+  - gaming
+maintainers:
+  - name: Steven Wagner

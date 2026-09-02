@@ -65,5 +65,7 @@ image-smoke: image
 
 chart:
     helm lint charts/cachic
+    helm template cachic charts/cachic > /dev/null
+    helm template cachic charts/cachic --set admin.token=x --set metrics.serviceMonitor.enabled=true --set serviceRules.steam.keep_query=true > /dev/null
 
 check: lint test perf

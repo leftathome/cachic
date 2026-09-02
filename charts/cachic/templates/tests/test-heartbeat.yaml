@@ -1,0 +1,38 @@
+{{- /*
+helm test: prove the cache actually answers, not merely that pods are Running.
+
+The heartbeat is the right probe because it is the ecosystem's own detection mechanism - if this
+returns 204 with the identifying header, prefill tools and LANCache Manager will find the cache.
+*/ -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "cachic.fullname" . }}-test-heartbeat"
+  labels:
+    {{- include "cachic.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: heartbeat
+      image: curlimages/curl:latest
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          url="http://{{ include "cachic.fullname" . }}:{{ .Values.service.ports.http }}/lancache-heartbeat"
+          echo "probing $url"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: lancache.steamcontent.com' "$url")
+          [ "$code" = "204" ] || { echo "heartbeat returned $code, expected 204"; exit 1; }
+          curl -s -D - -o /dev/null -H 'Host: lancache.steamcontent.com' "$url" \
+            | grep -qi 'x-lancache-processed-by' \
+            || { echo "heartbeat is missing X-LanCache-Processed-By; prefill tools will not detect this cache"; exit 1; }
+          echo "heartbeat ok"
+
+          admin="http://{{ include "cachic.fullname" . }}-admin:{{ .Values.admin.port }}/readyz"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$admin")
+          [ "$code" = "200" ] || { echo "readyz returned $code"; exit 1; }
+          echo "readyz ok"

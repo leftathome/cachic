@@ -1,0 +1,47 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cachic
+  namespace: cachic
+spec:
+  interval: 30m
+  chartRef:
+    kind: OCIRepository
+    name: cachic
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      # Do not roll back automatically. A failed upgrade that rolls back can leave the data volume
+      # written by a newer format and then read by an older binary; the config guard would refuse
+      # to start, which is correct but confusing. Fail visibly instead.
+      retries: 0
+  values:
+    # The two settings every install changes.
+    service:
+      loadBalancerIP: 192.168.1.10
+    persistence:
+      storageClass: local-path
+      size: 2200Gi
+
+    cache:
+      diskSize: 2000g
+      memSize: 4g
+
+    # Pin to the node with the NVMe. The cache is not highly available by design: if this node is
+    # down, clients fetch from the internet, which is what they would do without a cache anyway.
+    nodeSelector:
+      kubernetes.io/hostname: nuc-01
+
+    metrics:
+      serviceMonitor:
+        enabled: true
+
+    resources:
+      requests:
+        cpu: 500m
+        # memSize plus roughly 400 bytes per stored slice for the index, plus a baseline.
+        memory: 5Gi
+      limits:
+        memory: 6Gi

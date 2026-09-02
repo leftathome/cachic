@@ -113,6 +113,35 @@ jobs:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/
 
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint
+        run: helm lint charts/cachic
+      - name: Render with defaults
+        run: helm template cachic charts/cachic > /dev/null
+      - name: Render with every optional feature enabled
+        # The conditional templates are the ones that rot unnoticed, because the default render
+        # never exercises them.
+        run: |
+          helm template cachic charts/cachic \
+            --set admin.token=secret \
+            --set metrics.serviceMonitor.enabled=true \
+            --set hostNetwork=true \
+            --set persistence.existingClaim=preexisting \
+            --set serviceRules.steam.keep_query=true > /dev/null
+      - name: Validate rendered manifests against the Kubernetes schema
+        uses: docker://ghcr.io/yannh/kubeconform:latest
+        with:
+          entrypoint: /bin/sh
+          args: >-
+            -c "helm template cachic charts/cachic | kubeconform -strict -summary
+            -schema-location default
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'"
+
   docs:
     name: Docs build
     runs-on: ubuntu-latest

@@ -1,0 +1,16 @@
+{{- if .Values.serviceRules }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cachic.fullname" . }}-rules
+  labels:
+    {{- include "cachic.labels" . | nindent 4 }}
+data:
+  rules.toml: |
+{{- range $service, $rule := .Values.serviceRules }}
+    [services.{{ $service }}]
+    {{- range $key, $value := $rule }}
+    {{ $key }} = {{ toJson $value }}
+    {{- end }}
+{{- end }}
+{{- end }}
