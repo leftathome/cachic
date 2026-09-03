@@ -7,3 +7,4 @@ pub mod content;
 pub mod differ;
 pub mod loadgen;
 pub mod mockcdn;
+pub mod mockdns;

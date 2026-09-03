@@ -129,6 +129,13 @@ impl UpstreamClient {
             .connect_timeout(config.connect_timeout)
             .timeout(config.request_timeout)
             .redirect(reqwest::redirect::Policy::none())
+            // The single most important line in this file. Without it reqwest resolves through
+            // the system resolver and connects there, while the guard inspects addresses from
+            // UPSTREAM_DNS that are then thrown away - so the loop prevention does not work and
+            // the address guard is bypassable. See GuardedResolver.
+            .dns_resolver(std::sync::Arc::new(super::resolver::GuardedResolver::new(
+                resolver.clone(),
+            )))
             .build()
             .map_err(UpstreamError::Build)?;
         let per_service = config

@@ -12,10 +12,13 @@
 //! compiled at all, so reaching for the system resolver is a compile error rather than a code
 //! review catch.
 
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use hickory_resolver::{
-    config::{NameServerConfig, ResolverConfig},
+    config::{ConnectionConfig, NameServerConfig, ResolveHosts, ResolverConfig},
     net::runtime::TokioRuntimeProvider,
     TokioResolver,
 };
@@ -66,22 +69,51 @@ impl std::fmt::Debug for UpstreamResolver {
 }
 
 impl UpstreamResolver {
-    /// Build a resolver over exactly these servers.
+    /// Build a resolver over exactly these servers, on the standard DNS port.
     pub fn new(servers: &[IpAddr], allow_private: bool) -> Result<Self, ResolveError> {
+        let servers: Vec<SocketAddr> = servers
+            .iter()
+            .map(|ip| SocketAddr::new(*ip, DNS_PORT))
+            .collect();
+        Self::with_servers(&servers, allow_private)
+    }
+
+    /// Build a resolver over exactly these servers, each with an explicit port.
+    ///
+    /// `UPSTREAM_DNS` takes bare addresses and always means port 53, so production goes through
+    /// [`new`](Self::new). This exists so a test can stand up a DNS server on an ephemeral port -
+    /// which is the only way to give this resolver an answer that differs from the system
+    /// resolver's, and therefore the only way to prove the two are not being confused.
+    pub fn with_servers(servers: &[SocketAddr], allow_private: bool) -> Result<Self, ResolveError> {
         if servers.is_empty() {
             return Err(ResolveError::NoResolvers);
         }
         let mut config = ResolverConfig::default();
-        for ip in servers {
+        for server in servers {
             // UDP with TCP fallback: some CDN answers exceed 512 bytes.
-            config.add_name_server(NameServerConfig::udp_and_tcp(*ip));
+            let connections = [ConnectionConfig::udp(), ConnectionConfig::tcp()]
+                .into_iter()
+                .map(|mut connection| {
+                    connection.port = server.port();
+                    connection
+                })
+                .collect();
+            config.add_name_server(NameServerConfig::new(server.ip(), true, connections));
         }
-        let _ = DNS_PORT; // documented above; hickory uses 53 for these constructors
-        let inner = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
-            .build()
-            .map_err(|source| ResolveError::Build {
-                source: Box::new(source),
-            })?;
+
+        let mut builder =
+            TokioResolver::builder_with_config(config, TokioRuntimeProvider::default());
+
+        // Never consult /etc/hosts. hickory's default is `Auto`, which does read it, and that
+        // quietly breaks the guarantee this module is named for: a hosts entry for a CDN
+        // hostname - trivially present in a container image, or added by a sidecar - would be
+        // honoured ahead of UPSTREAM_DNS and could point the cache straight back at itself.
+        // Only the configured servers get a say.
+        builder.options_mut().use_hosts_file = ResolveHosts::Never;
+
+        let inner = builder.build().map_err(|source| ResolveError::Build {
+            source: Box::new(source),
+        })?;
         Ok(Self {
             inner,
             allow_private,
@@ -140,6 +172,50 @@ impl UpstreamResolver {
             });
         }
         Ok(allowed)
+    }
+}
+
+/// Adapter making [`UpstreamResolver`] the resolver reqwest itself dials through.
+///
+/// This exists because of a defect found by the first real deployment, and the shape of that
+/// defect is worth stating plainly so it is not reintroduced.
+///
+/// The client used to resolve a URL through [`UpstreamResolver`] for the address guard, discard
+/// the addresses, and then hand the *hostname* to reqwest — which resolved it again through the
+/// system resolver and connected there. Two consequences, both serious:
+///
+/// 1. FR-03's loop prevention did not work. In a lancache deployment the system resolver is the
+///    one answering CDN hostnames with this cache's own address, so upstream fetches looped back
+///    into our own listener. The setting was consulted and then ignored.
+/// 2. **The address guard was bypassable.** Checking one set of addresses and connecting to
+///    another is a time-of-check/time-of-use hole: a DNS server answering a public address to
+///    `UPSTREAM_DNS` and a private one to the system resolver defeats FR-64 entirely.
+///
+/// Wiring the resolver into reqwest closes both, because now the addresses that were guarded are
+/// the addresses that get dialled. There is no separate lookup left to disagree.
+#[derive(Clone)]
+pub struct GuardedResolver(Arc<UpstreamResolver>);
+
+impl GuardedResolver {
+    pub fn new(resolver: Arc<UpstreamResolver>) -> Self {
+        Self(resolver)
+    }
+}
+
+impl std::fmt::Debug for GuardedResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuardedResolver").finish_non_exhaustive()
+    }
+}
+
+impl reqwest::dns::Resolve for GuardedResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let resolver = self.0.clone();
+        Box::pin(async move {
+            // Port 0: reqwest substitutes the scheme's port, or the one named in the URL.
+            let addresses = resolver.resolve(name.as_str(), 0).await?;
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
     }
 }
 
