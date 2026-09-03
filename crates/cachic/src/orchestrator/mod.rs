@@ -45,6 +45,9 @@ use crate::{
 /// What the orchestrator decided about a request, before any body is produced.
 #[derive(Debug, Clone)]
 pub struct Plan {
+    /// The service this object belongs to. Carried so upstream fetches count against the right
+    /// per-service budget (FR-09) and so the access log can attribute the request.
+    pub service: String,
     pub status: StatusCode,
     pub wanted: ByteRange,
     pub total_len: u64,
@@ -82,6 +85,22 @@ pub enum OrchestratorError {
 }
 
 /// Shared orchestration state.
+/// Whether an upstream failure is the kind stale-on-error is for.
+///
+/// A 5xx or a timeout means the origin is having a bad day and the bytes probably still exist. A
+/// 404 means they do not, and serving a cached remnant of a deleted object is not resilience, it
+/// is staleness.
+fn is_transient(error: &crate::upstream::client::UpstreamError) -> bool {
+    use crate::upstream::client::UpstreamError;
+    match error {
+        UpstreamError::Status { status, .. } => status.is_server_error(),
+        UpstreamError::Request { source, .. } => {
+            source.is_timeout() || source.is_connect() || source.is_request()
+        }
+        _ => false,
+    }
+}
+
 pub struct Orchestrator {
     store: SliceStore,
     index: Arc<ObjectIndex>,
@@ -94,6 +113,8 @@ pub struct Orchestrator {
     fills: filler::FillRegistry,
     /// Speculative prefetch policy (FR-16). Only fires for clients that are clearly streaming.
     readahead_policy: readahead::ReadaheadPolicy,
+    /// Serve cached slices when the origin fails (FR-22).
+    stale_on_error: bool,
 }
 
 impl Orchestrator {
@@ -113,7 +134,14 @@ impl Orchestrator {
             metadata: Mutex::new(HashMap::new()),
             fills: filler::FillRegistry::new(),
             readahead_policy: readahead::ReadaheadPolicy::new(readahead.max(1)),
+            stale_on_error: true,
         }
+    }
+
+    /// Serve cached slices when the origin fails (FR-22). On by default.
+    pub fn with_stale_on_error(mut self, enabled: bool) -> Self {
+        self.stale_on_error = enabled;
+        self
     }
 
     /// Invalidate an object because its validators changed (FR-14).
@@ -194,7 +222,10 @@ impl Orchestrator {
     ) -> Result<ObjectMeta, OrchestratorError> {
         let start = index as u64 * self.slice_size as u64;
         let end = start + self.slice_size as u64 - 1;
-        let response = self.upstream.fetch_range(url, headers, start, end).await?;
+        let response = self
+            .upstream
+            .fetch_range(&key.service, url, headers, start, end)
+            .await?;
 
         let etag = response.header("etag").map(str::to_owned);
         let last_modified = response.header("last-modified").map(str::to_owned);
@@ -306,6 +337,7 @@ impl Orchestrator {
         };
 
         Ok(Plan {
+            service: key.service.clone(),
             status: if partial {
                 StatusCode::PARTIAL_CONTENT
             } else {
@@ -346,6 +378,15 @@ impl Orchestrator {
         }
 
         let key = SliceKey::new(plan.object, plan.meta.generation, index);
+
+        // Stale-on-error (FR-22). If the origin is failing transiently and we already hold this
+        // slice, serve it. This is checked before the fetch rather than after, because
+        // `get_or_fetch` returns the stored value without calling upstream anyway - the case that
+        // matters is a slice we hold whose *neighbours* are failing, and that falls out of
+        // per-slice handling: each slice independently either comes from the store or fails.
+        //
+        // What this adds is the fallback after a failed fetch, for a slice that landed in the
+        // store between the miss and the failure.
         let extent = range::slice_extent(index, self.slice_size, plan.total_len);
         let upstream = self.upstream.clone();
         let header = header_for(&plan.meta, self.slice_size);
@@ -360,13 +401,15 @@ impl Orchestrator {
         let observed_slot = observed.clone();
         let expected_len = extent.len();
         let fetch_url = url.clone();
+        let service = plan.service.clone();
 
-        self.store
+        let result = self
+            .store
             .get_or_fetch(key, move || async move {
                 let mismatch = mismatch_flag;
                 let observed = observed_slot;
                 let response = upstream
-                    .fetch_range(&fetch_url, &headers, extent.start, extent.end)
+                    .fetch_range(&service, &fetch_url, &headers, extent.start, extent.end)
                     .await?;
                 let found = validators::Validators::new(
                     response.header("etag").map(str::to_owned),
@@ -426,7 +469,24 @@ impl Orchestrator {
                     };
                 }
                 OrchestratorError::from(e)
-            })
+            });
+
+        match result {
+            Ok(value) => Ok(value),
+            Err(e) => {
+                // A transient origin failure should not fail a slice we can serve from disk.
+                if self.stale_on_error && is_transient_orchestrator_error(&e) {
+                    if let Ok(Some(value)) = self.store.get(&key).await {
+                        tracing::debug!(
+                            slice = index,
+                            "serving a cached slice through an upstream failure"
+                        );
+                        return Ok(value);
+                    }
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Ensure slice `index` of a `no_ranges` object is readable, filling the object if nobody
@@ -501,7 +561,10 @@ impl Orchestrator {
     ) -> Result<u32, OrchestratorError> {
         use futures_util::StreamExt;
 
-        let (_headers, stream) = self.upstream.fetch_stream(url, headers).await?;
+        let (_headers, stream) = self
+            .upstream
+            .fetch_stream(&plan.service, url, headers)
+            .await?;
         futures_util::pin_mut!(stream);
 
         let slice_size = self.slice_size as usize;
@@ -608,6 +671,21 @@ impl Orchestrator {
 
     pub fn store(&self) -> &SliceStore {
         &self.store
+    }
+}
+
+/// Whether an orchestrator error came from a transient upstream failure.
+fn is_transient_orchestrator_error(error: &OrchestratorError) -> bool {
+    match error {
+        OrchestratorError::Upstream(e) => is_transient(e),
+        // A store error carrying a rewrapped upstream failure loses its type crossing the store
+        // boundary, so the text is all that survives. Conservative: treat a timeout or a 5xx as
+        // transient and anything else as fatal.
+        OrchestratorError::Store(e) => {
+            let text = e.to_string();
+            text.contains("timed out") || text.contains("503") || text.contains("502")
+        }
+        _ => false,
     }
 }
 

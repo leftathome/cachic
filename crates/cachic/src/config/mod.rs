@@ -94,6 +94,15 @@ pub struct Config {
     #[arg(long, env = "UPSTREAM_MAX_INFLIGHT", default_value_t = 256)]
     pub upstream_max_inflight: usize,
 
+    /// On an upstream 5xx or timeout, serve whatever slices are already cached and fail only the
+    /// missing ones (FR-22).
+    ///
+    /// On by default. During a CDN outage this is the difference between a client that gets the
+    /// part of the object we hold and retries for the rest, and one that gets nothing at all.
+    /// Turn it off if a partial response is worse for your clients than a failed one.
+    #[arg(long, env = "STALE_ON_ERROR", default_value_t = true, action = clap::ArgAction::Set)]
+    pub stale_on_error: bool,
+
     /// Prefetch this many slices ahead on sequential reads. Per-connection memory is this
     /// multiplied by the slice size (FR-16).
     #[arg(long, env = "READAHEAD_SLICES", default_value_t = 4)]
@@ -327,6 +336,7 @@ mod tests {
         assert_eq!(c.admin_port, 9090);
         assert_eq!(c.readahead_slices, 4);
         assert_eq!(c.upstream_max_inflight, 256);
+        assert!(c.stale_on_error, "stale-on-error should default on");
         assert!(!c.passthrough_unknown_hosts);
         assert_eq!(c.log_format, LogFormat::Json);
         assert_eq!(

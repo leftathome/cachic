@@ -21,12 +21,13 @@ packaging (FR-70, FR-71, FR-72).
 
 Known gaps:
 
-- **FR-09** — per-service upstream concurrency limits. Global limits exist; the per-service split
-  does not.
-- **FR-22** — stale-on-error is partial. Failures are never cached, and cached slices are served,
-  but there is no deliberate serve-stale-on-5xx policy beyond that.
+- **FR-09** — done. Per-service ceilings come from `max_inflight` in the rules file; a service
+  without one is bounded by the global limit.
+- **FR-22** — done. `STALE_ON_ERROR` (default on) serves cached slices through a transient
+  upstream failure. It deliberately does not serve them through a 404.
 - **FR-73** — static musl binaries. Blocked: foyer 0.22 does not compile for musl, and the
-  upstream fix is one line. Binaries are glibc.
+  upstream fix is one line. Binaries are glibc. See
+  [known limitations](./known-limitations.md#no-static-musl-binaries).
 - **FR-47, FR-23, FR-55** — nginx cache import, revalidation and OpenTelemetry are 1.x by design.
 
 ## Verification

@@ -120,6 +120,12 @@ export CARGO_TARGET_DIR=~/.cache/cachic-target
 
 The same applies to any cache data directory used for benchmarks.
 
+## Known limitations
+
+Release binaries are **glibc, not static musl**, because foyer 0.22 does not compile for musl over
+a one-line upstream bug. Run the container image if you need musl. That and the other current
+limitations are written up in [known limitations](docs/known-limitations.md).
+
 ## Licence
 
 [Apache License 2.0](LICENSE).

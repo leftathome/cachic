@@ -28,6 +28,8 @@ and the performance gate again, and everything else depends on it.
 
 ## Not musl
 
+See [known limitations](./known-limitations.md) for the full write-up.
+
 The plan called for static musl binaries. foyer 0.22 does not compile for musl: `foyer-storage`
 guards its macOS `ioctl` branch with `cfg!(target_os = "macos")` - a runtime boolean - rather than
 `#[cfg(...)]`, so the Darwin call is compiled on every unix target and only typechecks against

@@ -103,7 +103,7 @@ code.
 | [TASK-30](./TASK-30-grafana-dashboard.md) | Grafana dashboard | Done |
 | [TASK-31](./TASK-31-service-rule-parity.md) | Per-service rule parity review | Done (real-traffic replay outstanding) |
 | [TASK-32](./TASK-32-docs-site.md) | Documentation site | Done |
-| [TASK-33](./TASK-33-soak-and-v1.md) | Soak, definition of done, v1.0 release | Harness done; 7-day soak and release need hardware and a decision |
+| [TASK-33](./TASK-33-soak-and-v1.md) | Soak, definition of done, v1.0 release | 0.1.0-rc1 tagged; validation runs on real hardware per docs/rc-test-plan.md |
 
 **Exit criteria**: Appendix C definition of done.
 

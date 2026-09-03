@@ -12,7 +12,9 @@
 # Understanding it
 
 - [Per-service parity](./service-parity.md)
+- [Known limitations](./known-limitations.md)
 - [Definition of done](./definition-of-done.md)
+- [Release-candidate test plan](./rc-test-plan.md)
 - [Benchmarks](./benchmarks/README.md)
   - [M0 measurements](./benchmarks/m0/README.md)
 

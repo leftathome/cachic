@@ -7,7 +7,7 @@
 //! target's bytes under the original request's cache key, so a later request for that key would
 //! serve content from a URL nobody asked for (FR-21).
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use hyper::{header::HeaderMap, StatusCode};
@@ -21,7 +21,14 @@ pub struct ClientConfig {
     /// Retries after a transient failure. One is enough to paper over a reset connection without
     /// turning an origin outage into an amplification attack against it.
     pub retries: usize,
+    /// Global ceiling on concurrent upstream fetches (NFR-4).
     pub max_inflight: usize,
+    /// Per-service ceilings (FR-09), from the rules file.
+    ///
+    /// A service with no entry is bounded only by the global limit. The point of the per-service
+    /// split is that one origin being slow should not consume the whole global budget and starve
+    /// every other service - a Windows Update host stalling must not stop Steam downloading.
+    pub per_service_inflight: BTreeMap<String, usize>,
 }
 
 impl Default for ClientConfig {
@@ -31,6 +38,7 @@ impl Default for ClientConfig {
             request_timeout: Duration::from_secs(120),
             retries: 1,
             max_inflight: 256,
+            per_service_inflight: BTreeMap::new(),
         }
     }
 }
@@ -98,6 +106,9 @@ pub struct UpstreamClient {
     http: reqwest::Client,
     resolver: Arc<UpstreamResolver>,
     inflight: Arc<tokio::sync::Semaphore>,
+    /// Built once at construction. Services are a closed set from `cache-domains`, so this never
+    /// needs to grow at runtime and needs no lock on the hot path.
+    per_service: Arc<BTreeMap<String, Arc<tokio::sync::Semaphore>>>,
     config: ClientConfig,
 }
 
@@ -120,10 +131,22 @@ impl UpstreamClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(UpstreamError::Build)?;
+        let per_service = config
+            .per_service_inflight
+            .iter()
+            .map(|(service, limit)| {
+                (
+                    service.clone(),
+                    Arc::new(tokio::sync::Semaphore::new((*limit).max(1))),
+                )
+            })
+            .collect();
+
         Ok(Self {
             http,
             resolver,
             inflight: Arc::new(tokio::sync::Semaphore::new(config.max_inflight)),
+            per_service: Arc::new(per_service),
             config,
         })
     }
@@ -155,6 +178,7 @@ impl UpstreamClient {
     /// Fetch a byte range from an origin.
     pub async fn fetch_range(
         &self,
+        service: &str,
         url: &str,
         headers: &HeaderMap,
         start: u64,
@@ -166,6 +190,10 @@ impl UpstreamClient {
 
         // Backpressure rather than an unbounded queue: NFR-4 caps in-flight upstream fetches, and
         // exceeding it should slow us down, not exhaust the origin's connection limit.
+        //
+        // The per-service permit is taken first and the global one second, consistently, so two
+        // services can never deadlock by holding one another's permits.
+        let _service_permit = self.service_permit(service).await;
         let _permit = self
             .inflight
             .acquire()
@@ -246,6 +274,7 @@ impl UpstreamClient {
     /// starve every other fetch.
     pub async fn fetch_stream(
         &self,
+        service: &str,
         url: &str,
         headers: &HeaderMap,
     ) -> Result<
@@ -256,6 +285,9 @@ impl UpstreamClient {
         UpstreamError,
     > {
         self.check_url(url).await?;
+        // A full-object fill counts against its service's budget even though it does not hold a
+        // global permit: a range-ignoring origin should not be able to run unbounded fills.
+        let _service_permit = self.service_permit(service).await;
 
         let mut request = self.http.get(url);
         for (name, value) in headers {
@@ -293,8 +325,24 @@ impl UpstreamClient {
         Ok((headers, response.bytes_stream()))
     }
 
+    /// Take a service's permit, if that service has a limit configured.
+    async fn service_permit(&self, service: &str) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let semaphore = self.per_service.get(service)?.clone();
+        Some(
+            semaphore
+                .acquire_owned()
+                .await
+                .expect("per-service semaphore is never closed"),
+        )
+    }
+
     pub fn available_permits(&self) -> usize {
         self.inflight.available_permits()
+    }
+
+    /// Remaining per-service permits, for tests and the admin API.
+    pub fn service_permits(&self, service: &str) -> Option<usize> {
+        self.per_service.get(service).map(|s| s.available_permits())
     }
 }
 
@@ -338,6 +386,62 @@ mod tests {
     async fn allows_a_public_literal() {
         let c = client(4);
         c.check_host("93.184.216.34", 80).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_service_without_a_limit_is_bounded_only_globally() {
+        let c = client(4);
+        assert_eq!(c.service_permits("steam"), None);
+    }
+
+    #[tokio::test]
+    async fn per_service_limits_are_independent() {
+        // The point of FR-09: one origin stalling must not consume the global budget and starve
+        // every other service.
+        let resolver =
+            Arc::new(UpstreamResolver::new(&["1.1.1.1".parse().unwrap()], false).unwrap());
+        let mut per_service = BTreeMap::new();
+        per_service.insert("steam".to_string(), 2);
+        per_service.insert("wsus".to_string(), 1);
+        let c = UpstreamClient::new(
+            resolver,
+            ClientConfig {
+                max_inflight: 100,
+                per_service_inflight: per_service,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(c.service_permits("steam"), Some(2));
+        assert_eq!(c.service_permits("wsus"), Some(1));
+
+        let held = c.service_permit("wsus").await;
+        assert!(held.is_some());
+        assert_eq!(c.service_permits("wsus"), Some(0));
+        // Exhausting one service leaves the others untouched.
+        assert_eq!(c.service_permits("steam"), Some(2));
+        drop(held);
+        assert_eq!(c.service_permits("wsus"), Some(1));
+    }
+
+    #[tokio::test]
+    async fn a_zero_service_limit_is_treated_as_one() {
+        // Configuration rejects zero, but a zero here would deadlock rather than throttle, so it
+        // is clamped rather than trusted.
+        let resolver =
+            Arc::new(UpstreamResolver::new(&["1.1.1.1".parse().unwrap()], false).unwrap());
+        let mut per_service = BTreeMap::new();
+        per_service.insert("steam".to_string(), 0);
+        let c = UpstreamClient::new(
+            resolver,
+            ClientConfig {
+                per_service_inflight: per_service,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(c.service_permits("steam"), Some(1));
     }
 
     #[tokio::test]

@@ -158,10 +158,25 @@ async fn run(config: Config) -> Result<(), Fatal> {
             .map_err(|e| Fatal::Config(chain(&e)))?,
     );
     let sni_resolver = resolver.clone();
+    // Per-service ceilings come from the rules file (FR-09). A service without one is bounded
+    // only by the global limit.
+    let per_service_inflight: std::collections::BTreeMap<String, usize> = rules
+        .services
+        .iter()
+        .filter_map(|(service, rule)| rule.max_inflight.map(|limit| (service.clone(), limit)))
+        .collect();
+    if !per_service_inflight.is_empty() {
+        tracing::info!(
+            services = per_service_inflight.len(),
+            "per-service upstream limits configured"
+        );
+    }
+
     let upstream = UpstreamClient::new(
         resolver,
         ClientConfig {
             max_inflight: config.upstream_max_inflight,
+            per_service_inflight,
             ..ClientConfig::default()
         },
     )
@@ -178,13 +193,19 @@ async fn run(config: Config) -> Result<(), Fatal> {
         })
         .collect();
 
-    let orchestrator = Arc::new(Orchestrator::new(
-        store,
-        index,
-        upstream,
-        config.cache_slice_size as u32,
-        config.readahead_slices,
-    ));
+    let orchestrator = Arc::new(
+        Orchestrator::new(
+            store,
+            index,
+            upstream,
+            config.cache_slice_size as u32,
+            config.readahead_slices,
+        )
+        .with_stale_on_error(config.stale_on_error),
+    );
+    if !config.stale_on_error {
+        tracing::info!("stale-on-error disabled: an upstream failure will fail the whole request");
+    }
 
     let mut compiled = HashMap::new();
     for name in domain_list.services.iter().map(|s| s.name.clone()) {

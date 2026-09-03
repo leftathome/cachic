@@ -220,6 +220,62 @@ async fn an_origin_that_fails_partway_does_not_produce_a_corrupt_object() {
 }
 
 #[tokio::test]
+async fn cached_slices_are_served_through_an_origin_outage() {
+    // FR-22. During a CDN outage this is the difference between a client getting the part of the
+    // object we hold and getting nothing at all.
+    let h = Harness::start("chaos-stale", CdnConfig::default(), 64 * 1024 * 1024).await;
+    let size = 8 * SLICE as u64;
+    let path = MockCdn::object_path("outage", size);
+    let expected = content::range(content::seed_for("outage"), 0, size as usize);
+
+    // Warm the first two slices.
+    let warm = h
+        .request(&path)
+        .header("range", format!("bytes=0-{}", 2 * SLICE as u64 - 1))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(warm.status(), 206);
+    let _ = warm.bytes().await.unwrap();
+
+    // The origin goes down.
+    h.origin.set_failure(Failure::ServerError);
+
+    // A request for the cached region still succeeds, and the bytes are right.
+    let cached = h
+        .request(&path)
+        .header("range", format!("bytes=0-{}", SLICE as u64 - 1))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cached.status(),
+        206,
+        "a cached range failed while the origin was down; stale-on-error is not working"
+    );
+    assert_eq!(
+        cached.bytes().await.unwrap().as_ref(),
+        &expected[..SLICE as usize]
+    );
+
+    // A request needing an uncached slice still fails: serving what we do not have is not an
+    // option, and inventing it would be worse than failing.
+    let uncached = h
+        .request(&path)
+        .header(
+            "range",
+            format!("bytes={}-{}", 6 * SLICE as u64, 7 * SLICE as u64),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !uncached.status().is_success() || uncached.bytes().await.is_err(),
+        "an uncached range succeeded while the origin was down"
+    );
+}
+
+#[tokio::test]
 async fn a_full_disk_degrades_rather_than_serving_wrong_bytes() {
     // A disk tier far smaller than the working set. Slices are evicted constantly, so most reads
     // miss and refetch. What must not happen is a read returning something other than what was
