@@ -223,3 +223,7 @@ jobs:
           body_path: CHANGELOG.md
           files: /tmp/artifacts/*
           generate_release_notes: false
+          # A SemVer pre-release tag carries a hyphen. Without this an rc is published as a full
+          # release and GitHub marks it Latest, which is exactly the wrong signal for something
+          # whose own release notes say not for production.
+          prerelease: ${{ contains(github.ref_name, '-') }}
