@@ -130,13 +130,19 @@ jobs:
           for tag in $(jq -cr '.tags | join(" ")' <<< '${{ steps.meta.outputs.json }}'); do
             cosign sign --yes "$tag"
           done
+      # metadata-action's version output, not github.ref_name: the tag is `v0.1.0-rc1` and the
+      # image is published as `0.1.0-rc1`, so referencing the ref directly asks the registry for a
+      # tag that does not exist. That is how this was found - the first tag published a signed
+      # image and then failed here with "manifest unknown".
       - uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.IMAGE }}:${{ github.ref_name }}
+          image: ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
           format: spdx-json
           output-file: sbom.spdx.json
       - name: Attach the SBOM to the image
-        run: cosign attest --yes --predicate sbom.spdx.json --type spdxjson ${{ env.IMAGE }}:${{ github.ref_name }}
+        run: |
+          cosign attest --yes --predicate sbom.spdx.json --type spdxjson \
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
       - uses: actions/upload-artifact@v4
         with:
           name: sbom
