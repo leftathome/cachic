@@ -36,6 +36,17 @@ the runtime image to `distroless/static`. Both changes are already commented in 
 
 **Workaround if you need musl today.** Run the container image, which carries its own libc.
 
+## No macOS binaries
+
+**What.** The release pipeline builds Linux amd64 and arm64 only.
+
+**Why.** `foyer`'s `FsDeviceBuilder::with_direct` is `#[cfg(target_os = "linux")]`, since O_DIRECT
+does not exist on macOS. cachic now compiles for macOS — the call is gated and buffered IO is used
+— but shipping a binary implies a support commitment nothing else here backs. The PRD lists macOS
+as a development platform, not a deployment target.
+
+`cargo build` on macOS works, which is what a contributor needs.
+
 ## Stale-on-error is transient-only
 
 `STALE_ON_ERROR` serves cached slices through an upstream 5xx, timeout or connection failure. It

@@ -122,11 +122,17 @@ impl SliceStore {
             path: dir.to_owned(),
             source,
         })?;
-        let device = FsDeviceBuilder::new(dir)
-            .with_capacity(config.disk_bytes)
-            .with_direct(config.direct_io)
-            .build()
-            .map_err(StoreError::Open)?;
+        // `with_direct` is Linux-only in foyer: O_DIRECT does not exist on macOS, and the method
+        // is `#[cfg(target_os = "linux")]`. Calling it unconditionally means cachic does not
+        // compile for macOS at all, which is how it was found - the release pipeline's Darwin
+        // binary failed to build. macOS is a development platform here, not a deployment target,
+        // so it simply uses buffered IO.
+        let device = FsDeviceBuilder::new(dir).with_capacity(config.disk_bytes);
+        #[cfg(target_os = "linux")]
+        let device = device.with_direct(config.direct_io);
+        #[cfg(not(target_os = "linux"))]
+        let _ = config.direct_io;
+        let device = device.build().map_err(StoreError::Open)?;
 
         let mut builder = HybridCacheBuilder::new().with_name("cachic");
         if let Some(registry) = registry {

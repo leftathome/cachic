@@ -23,7 +23,6 @@
 # is slow.
 
 ARG RUST_VERSION=1.98
-ARG TARGET=x86_64-unknown-linux-gnu
 
 # --- plan -------------------------------------------------------------------------------------
 FROM rust:${RUST_VERSION}-bookworm AS chef
@@ -36,13 +35,15 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # --- build ------------------------------------------------------------------------------------
 FROM chef AS builder
-ARG TARGET
 COPY --from=planner /build/recipe.json recipe.json
+# No --target: the release pipeline builds each architecture on a native runner, so the host is
+# the target. Naming an explicit triple meant the arm64 runner tried to cross-compile for x86_64
+# without that toolchain installed, which is how this was found.
 # Dependencies only: this layer is cached until Cargo.lock changes.
-RUN cargo chef cook --release --target ${TARGET} --bin cachic --recipe-path recipe.json
+RUN cargo chef cook --release --bin cachic --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --target ${TARGET} --bin cachic \
- && cp target/${TARGET}/release/cachic /build/cachic \
+RUN cargo build --release --bin cachic \
+ && cp target/release/cachic /build/cachic \
  && strip /build/cachic
 
 # --- runtime ----------------------------------------------------------------------------------

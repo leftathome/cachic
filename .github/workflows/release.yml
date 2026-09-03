@@ -170,8 +170,8 @@ jobs:
             runner: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-          - target: aarch64-apple-darwin
-            runner: macos-latest
+          # macOS is a development platform, not a deployment target (PRD tier list). It builds,
+          # but shipping a binary for it implies a support commitment nothing else here backs.
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
