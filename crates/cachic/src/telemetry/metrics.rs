@@ -34,6 +34,11 @@ use prometheus::{
 pub struct Metrics {
     registry: Registry,
 
+    // The label is `cdn_service`, not `service`. kube-prometheus-stack attaches its own
+    // `service` label (the Kubernetes Service name) and, on collision, Prometheus keeps its own
+    // and renames ours to `exported_service`. Every per-CDN query then groups by the Service name
+    // and collapses to a single flat series, which silently destroys exactly the breakdown these
+    // metrics exist to provide.
     /// Requests by service and cache status. Both label sets are closed.
     pub requests: IntCounterVec,
     /// Bytes served to clients, by service and cache status.
@@ -68,17 +73,17 @@ impl Metrics {
         let requests = counter(
             "cachic_requests_total",
             "Client requests by service and cache status",
-            &["service", "status"],
+            &["cdn_service", "status"],
         )?;
         let bytes_served = counter(
             "cachic_bytes_served_total",
             "Bytes served to clients by service and cache status",
-            &["service", "status"],
+            &["cdn_service", "status"],
         )?;
         let bytes_fetched = counter(
             "cachic_bytes_fetched_total",
             "Bytes fetched from origins by service",
-            &["service"],
+            &["cdn_service"],
         )?;
         let upstream_seconds = HistogramVec::new(
             HistogramOpts::new(
@@ -89,7 +94,7 @@ impl Metrics {
             .buckets(vec![
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
             ]),
-            &["service"],
+            &["cdn_service"],
         )?;
         let inflight = IntGauge::new(
             "cachic_upstream_inflight",
@@ -98,12 +103,12 @@ impl Metrics {
         let checksum_failures = counter(
             "cachic_checksum_failures_total",
             "Slices whose checksum failed verification on read",
-            &["service"],
+            &["cdn_service"],
         )?;
         let generation_bumps = counter(
             "cachic_generation_bumps_total",
             "Objects invalidated because their validators changed",
-            &["service"],
+            &["cdn_service"],
         )?;
         let guard_refusals = counter(
             "cachic_upstream_guard_refusals_total",
@@ -172,8 +177,54 @@ mod tests {
             .inc_by(4096);
         let text = m.render().unwrap();
         assert!(text.contains("cachic_requests_total"), "{text}");
-        assert!(text.contains("service=\"steam\""), "{text}");
+        assert!(text.contains("cdn_service=\"steam\""), "{text}");
         assert!(text.contains("status=\"HIT\""), "{text}");
+    }
+
+    #[test]
+    fn no_metric_uses_a_label_prometheus_will_take_for_itself() {
+        // `service` is effectively reserved in a Kubernetes monitoring stack: the
+        // kube-prometheus-stack ServiceMonitor pipeline attaches its own `service` label holding
+        // the Kubernetes Service name, and on collision Prometheus keeps its own and renames the
+        // exporter's to `exported_service`. Every per-CDN query then groups by the Service name
+        // and silently collapses to one flat series.
+        //
+        // Substring matching would not catch this - `cdn_service="steam"` contains
+        // `service="steam"` - so this parses the label names out and compares them exactly.
+        let (m, _) = Metrics::new().unwrap();
+        m.requests.with_label_values(&["steam", "HIT"]).inc();
+        m.bytes_fetched.with_label_values(&["steam"]).inc_by(1);
+        m.upstream_seconds
+            .with_label_values(&["steam"])
+            .observe(0.1);
+        let text = m.render().unwrap();
+
+        const RESERVED: &[&str] = &[
+            "service",
+            "job",
+            "instance",
+            "pod",
+            "namespace",
+            "container",
+        ];
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let Some(labels) = line
+                .split_once('{')
+                .and_then(|(_, rest)| rest.rsplit_once('}'))
+                .map(|(labels, _)| labels)
+            else {
+                continue;
+            };
+            for pair in labels.split(',') {
+                let name = pair.split('=').next().unwrap_or("").trim();
+                assert!(
+                    !RESERVED.contains(&name),
+                    "metric label {name:?} collides with one Prometheus attaches itself, \
+                     so the exporter's value is renamed to exported_{name} and every query \
+                     grouping by it breaks: {line}"
+                );
+            }
+        }
     }
 
     #[test]

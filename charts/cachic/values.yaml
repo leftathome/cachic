@@ -105,6 +105,41 @@ affinity: {}
 podAnnotations: {}
 podLabels: {}
 
+# Adopt the current settings even though they disagree with what the cache directory records
+# (FORCE_CONFIG). The guard exists so a changed slice size cannot silently orphan a cache, and it
+# is reachable by editing cache.sliceSize - so the override has to be reachable too.
+#
+# Setting this makes the existing cache unreadable at the new setting. Expect a full refill.
+forceConfig: false
+
+# Additional environment variables, as a list of core/v1 EnvVar.
+#
+# The named values above cover the common settings; this is the escape hatch for the rest of the
+# binary's options - ALLOW_PRIVATE_UPSTREAMS, PASSTHROUGH_UNKNOWN_HOSTS, STALE_ON_ERROR,
+# UPSTREAM_MAX_INFLIGHT, CACHE_DIRECT_IO, CACHE_FLUSHERS, CACHE_BUFFER_POOL and the
+# CACHE_DOMAINS_* family - so a documented option is never unreachable on Kubernetes.
+#
+#   extraEnv:
+#     - name: STALE_ON_ERROR
+#       value: "false"
+#     - name: CACHE_DOMAINS_REFRESH
+#       value: "0"          # the air-gapped install
+extraEnv: []
+
+# Sources to pull environment from, as a list of core/v1 EnvFromSource (configMapRef, secretRef).
+envFrom: []
+
+# The image `helm test` uses to probe the heartbeat.
+#
+# Pinned by digest rather than a tag: an unpinned :latest makes `helm test` depend on Docker Hub
+# being reachable and on anonymous pull limits, and it means a released chart does not describe a
+# fixed thing. Override both fields to pull from an internal mirror.
+tests:
+  image:
+    repository: curlimages/curl
+    # curlimages/curl:8.11.1
+    digest: sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+
 securityContext:
   runAsNonRoot: true
   runAsUser: 65532

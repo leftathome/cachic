@@ -179,6 +179,12 @@ jobs:
           # macOS is a development platform, not a deployment target (PRD tier list). It builds,
           # but shipping a binary for it implies a support commitment nothing else here backs.
     runs-on: ${{ matrix.runner }}
+    # Build against Debian 12's glibc (2.36) rather than the runner's. A binary linked on
+    # ubuntu-latest requires GLIBC_2.38, which does not exist on Debian 12 or Ubuntu 22.04 - both
+    # ordinary homelab hosts, and both in support. The 0.1.0-rc1 tarball did exactly that and
+    # would not execute there. This is the same base the image builds from, so the tarball and the
+    # container agree on their floor.
+    container: rust:1.98-bookworm
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -189,10 +195,41 @@ jobs:
       # with cfg!(target_os = "macos") rather than #[cfg(...)], so the Darwin call is compiled on
       # every unix target and only typechecks against glibc. See the Dockerfile.
       - run: cargo build --release --target ${{ matrix.target }} --bin cachic
+      - name: Check the glibc floor we promise
+        # An asserted floor is worth nothing; this one fails the release. GLIBC_2.36 is Debian 12
+        # and Ubuntu 22.10; anything higher silently drops supported hosts, which is how rc1
+        # shipped a binary that could not start on Ubuntu 22.04.
+        run: |
+          max=$(objdump -T "target/${{ matrix.target }}/release/cachic" \
+            | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV | tail -1)
+          echo "highest symbol version required: ${max:-none}"
+          highest=$(printf '%s\n' "${max#GLIBC_}" "2.36" | sort -V | tail -1)
+          if [ "$highest" != "2.36" ]; then
+            echo "::error::binary requires ${max}, above the documented floor of GLIBC_2.36." \
+                 "It will not start on Debian 12 or Ubuntu 22.04. See docs/known-limitations.md."
+            exit 1
+          fi
       - name: Package
         run: |
           tar -czf "cachic-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" \
             -C "target/${{ matrix.target }}/release" cachic
+      # The test plan's measurement sections were unrunnable from a release: they name
+      # `cachic-bench` and `cachic-soak` as if they were executables, but the tarball held one
+      # file and the image one binary, and both harnesses are cargo examples reachable only from
+      # a source checkout with a Rust toolchain. Ship them.
+      #
+      # Separate from the main tarball on purpose - these are test harnesses, they generate
+      # traffic and synthetic data, and none of them belong on a cache serving real clients.
+      - name: Build the measurement harnesses
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p cachic \
+            --example bench --example soak
+          cargo build --release --target ${{ matrix.target }} -p cachic-testkit \
+            --example loadtest --example origin
+      - name: Package the harnesses
+        run: |
+          tar -czf "cachic-tools-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release/examples" bench soak loadtest origin
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}

@@ -96,6 +96,20 @@ spec:
                   name: {{ .Values.admin.existingSecret | default (include "cachic.fullname" .) }}
                   key: {{ .Values.admin.existingSecretKey }}
             {{- end }}
+            {{- if .Values.forceConfig }}
+            # Adopt settings that disagree with what the cache directory was built with. First
+            # class rather than an extraEnv entry because the guard it overrides is reachable by
+            # changing an ordinary value like cache.sliceSize, and the only way out is this.
+            - name: FORCE_CONFIG
+              value: "true"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: data
               mountPath: /data/cache

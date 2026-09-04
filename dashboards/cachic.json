@@ -44,8 +44,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (service) (rate(cachic_requests_total{status=\"HIT\"}[5m])) / clamp_min(sum by (service) (rate(cachic_requests_total[5m])), 0.001)",
-          "legendFormat": "{{service}}",
+          "expr": "sum by (cdn_service) (rate(cachic_requests_total{status=\"HIT\"}[5m])) / clamp_min(sum by (cdn_service) (rate(cachic_requests_total[5m])), 0.001)",
+          "legendFormat": "{{cdn_service}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
@@ -89,7 +89,7 @@
         {
           "expr": "sum(rate(cachic_bytes_fetched_total[5m]))",
           "legendFormat": "fetched from origins",
-          "refId": "A",
+          "refId": "B",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -132,7 +132,7 @@
         {
           "expr": "sum(rate(foyer_storage_block_engine_op_total{op=\"enqueue_skip\"}[5m]))",
           "legendFormat": "enqueue skip",
-          "refId": "A",
+          "refId": "B",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -178,7 +178,7 @@
       "targets": [
         {
           "expr": "sum(rate(cachic_checksum_failures_total[5m]))",
-          "legendFormat": "{{service}}",
+          "legendFormat": "{{cdn_service}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
@@ -225,7 +225,7 @@
       "targets": [
         {
           "expr": "sum(rate(cachic_generation_bumps_total[5m]))",
-          "legendFormat": "{{service}}",
+          "legendFormat": "{{cdn_service}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
@@ -269,7 +269,7 @@
         {
           "expr": "histogram_quantile(0.99, sum by (le) (rate(cachic_upstream_seconds_bucket[5m])))",
           "legendFormat": "p99",
-          "refId": "A",
+          "refId": "B",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -312,7 +312,7 @@
         {
           "expr": "cachic_client_connections",
           "legendFormat": "client connections",
-          "refId": "A",
+          "refId": "B",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"

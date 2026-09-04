@@ -17,7 +17,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: heartbeat
-      image: curlimages/curl:latest
+      image: {{ .Values.tests.image.repository }}@{{ .Values.tests.image.digest }}
       command:
         - /bin/sh
         - -c

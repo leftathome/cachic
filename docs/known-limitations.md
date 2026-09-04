@@ -36,6 +36,32 @@ the runtime image to `distroless/static`. Both changes are already commented in 
 
 **Workaround if you need musl today.** Run the container image, which carries its own libc.
 
+## The release binaries need glibc 2.36 or newer
+
+**What.** The `*-unknown-linux-gnu` tarballs run on Debian 12, Ubuntu 22.10 and anything newer.
+They will not start on a host with an older glibc:
+
+```
+./cachic: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found
+```
+
+**Why.** A dynamically linked binary requires whatever glibc symbol versions it was linked
+against. 0.1.0-rc1 was built on `ubuntu-latest` (glibc 2.39) and so demanded `GLIBC_2.38`, which
+does not exist on Debian 12 (2.36) or Ubuntu 22.04 (2.35) — both ordinary homelab hosts, and both
+still in support. The binary was unusable there and nothing said so.
+
+**What changed.** Release binaries now build inside `rust:1.98-bookworm`, the same Debian 12 base
+the container image uses, so the tarball and the image agree on their floor. The release job then
+reads the highest `GLIBC_x.y` symbol out of the built binary and fails if it exceeds 2.36, because
+a floor that is merely written down is a floor nobody notices breaking.
+
+**Consequences.** Ubuntu 22.04 (glibc 2.35) is still below the floor.
+
+**Workaround.** Run the container image, which carries its own libc, or build from source on the
+host. Lowering the floor further means building on an older base than the image itself uses, which
+would make the two artefacts disagree; see [No static musl binaries](#no-static-musl-binaries) for
+why the static option is closed today.
+
 ## No macOS binaries
 
 **What.** The release pipeline builds Linux amd64 and arm64 only.
