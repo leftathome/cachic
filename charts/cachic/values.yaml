@@ -108,6 +108,16 @@ podLabels: {}
 securityContext:
   runAsNonRoot: true
   runAsUser: 65532
+  # Without this, a first install onto dynamically provisioned block storage CrashLoops:
+  # "cannot write /data/cache/CONFIG: Permission denied". The volume arrives formatted
+  # root:root 0755 and kubelet only adjusts ownership when fsGroup is set. This is not
+  # specific to one provisioner - Ceph RBD, EBS and GCE PD all behave this way. Storage
+  # classes that hand out world-writable directories mask it.
+  fsGroup: 65532
+  # Only chown when the volume root does not already match. The default, Always, walks the
+  # whole cache on every restart, which on a multi-terabyte volume delays readiness for a
+  # long time to no purpose.
+  fsGroupChangePolicy: OnRootMismatch
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
   capabilities:

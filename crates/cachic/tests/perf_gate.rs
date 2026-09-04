@@ -34,6 +34,13 @@
 //! same machine. A gate enforced against a debug build would warn on every run and be deleted
 //! within a week, so in debug it measures and reports but does not enforce. Run `just perf`.
 
+// Measure what ships. The global allocator lives in main.rs, which an integration test does not
+// link, so without this the gate would benchmark the system allocator while the released binary
+// uses jemalloc - a gate measuring a configuration that never runs in production.
+#[cfg(all(feature = "jemalloc", target_env = "gnu"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},

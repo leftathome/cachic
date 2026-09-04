@@ -55,6 +55,29 @@ pub struct Config {
     #[arg(long, env = "CACHE_SLICE_SIZE", default_value = "1m", value_parser = parse_size_arg)]
     pub cache_slice_size: u64,
 
+    /// Bypass the page cache for disk-tier I/O.
+    ///
+    /// Off by default, which means every slice written to disk is also held in the kernel's page
+    /// cache. That is double caching - cachic already has its own RAM tier - and under a cgroup
+    /// limit it counts toward the container's working set, so memory use looks like it is
+    /// climbing without bound when most of it is reclaimable. Turn this on to make the RAM tier
+    /// the only place slices are cached in memory, at the cost of losing the kernel's read
+    /// caching for anything the RAM tier misses. Linux only; ignored elsewhere.
+    #[arg(long, env = "CACHE_DIRECT_IO", default_value_t = false, action = clap::ArgAction::Set)]
+    pub cache_direct_io: bool,
+
+    /// Disk-tier flush threads.
+    ///
+    /// foyer drops a disk write when its flushers cannot keep up, so this sets the write rate the
+    /// cache can absorb before it starts silently losing slices. The default handles a 5 Gbit
+    /// fill; raise it with the buffer pool for 10 Gbit and above.
+    #[arg(long, env = "CACHE_FLUSHERS", default_value_t = 4)]
+    pub cache_flushers: usize,
+
+    /// Disk-tier flush buffer pool, shared across flushers.
+    #[arg(long, env = "CACHE_BUFFER_POOL", default_value = "128m", value_parser = parse_size_arg)]
+    pub cache_buffer_pool: u64,
+
     /// Cache data directory.
     #[arg(long, env = "CACHE_DATA_DIR", default_value = "/data/cache")]
     pub cache_data_dir: PathBuf,
@@ -208,6 +231,24 @@ impl Config {
             value,
             requirement,
         };
+
+        // foyer needs at least one flusher; zero would mean the disk tier can never drain.
+        if self.cache_flushers == 0 {
+            return Err(invalid(
+                "CACHE_FLUSHERS",
+                self.cache_flushers.to_string(),
+                "at least 1: with no flushers the disk tier can never drain and every write is                  dropped",
+            ));
+        }
+        // Each flusher needs room for a whole block, or it cannot assemble one to write.
+        let min_pool = self.cache_slice_size.saturating_mul(4);
+        if self.cache_buffer_pool < min_pool {
+            return Err(invalid(
+                "CACHE_BUFFER_POOL",
+                units::format_size(self.cache_buffer_pool),
+                "at least four slices, so a flusher can assemble a whole block; below this the                  disk tier silently drops writes",
+            ));
+        }
 
         // A slice smaller than this is not a cache tuning, it is a mistake: per-slice overhead
         // would dominate, and slice indices are u32, so a tiny slice makes large objects

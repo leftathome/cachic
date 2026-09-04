@@ -49,6 +49,20 @@ const MAX_CLIENT_CONNECTIONS: u64 = 10_000;
 /// on its own terms rather than being killed part-way through.
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Use jemalloc rather than the system allocator.
+///
+/// Not a micro-optimisation. glibc's malloc keeps per-thread arenas and, once it has seen 1 MiB
+/// slice buffers freed, raises its mmap threshold so those allocations come from the heap and
+/// fragment it. RSS then settles far above the configured memory tier and stays there: measured
+/// at 1740 MiB against a 256 MiB tier, against 787 MiB here. That gap is what made the shipped
+/// chart limits OOM under load.
+///
+/// musl has no jemalloc dependency configured, so this is compiled out there and the equivalent
+/// mitigation is MALLOC_ARENA_MAX.
+#[cfg(all(feature = "jemalloc", target_env = "gnu"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let config = Config::parse();

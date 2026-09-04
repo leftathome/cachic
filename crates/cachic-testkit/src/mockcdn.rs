@@ -125,7 +125,13 @@ pub struct MockCdn {
 impl MockCdn {
     /// Bind to an ephemeral port on loopback and start serving.
     pub async fn start(config: Config) -> anyhow::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        Self::start_on(SocketAddr::from(([127, 0, 0, 1], 0)), config).await
+    }
+
+    /// Bind to a specific address. Used when the origin has to be reachable from outside the
+    /// process - from a container under test, for instance.
+    pub async fn start_on(addr: SocketAddr, config: Config) -> anyhow::Result<Self> {
+        let listener = TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         let stats = Arc::new(Stats::default());
         let shutdown = Arc::new(AtomicBool::new(false));

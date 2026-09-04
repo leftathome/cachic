@@ -72,7 +72,9 @@ impl StoreConfig {
             disk_bytes: config.cache_disk_size as usize,
             // A block must hold several slices to be useful as an eviction unit.
             block_bytes: DEFAULT_BLOCK_SIZE.max(config.cache_slice_size as usize * 4),
-            ..Self::default()
+            direct_io: config.cache_direct_io,
+            flushers: config.cache_flushers,
+            buffer_pool_bytes: config.cache_buffer_pool as usize,
         }
     }
 }

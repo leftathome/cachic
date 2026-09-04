@@ -9,6 +9,8 @@ description = "Development-only test harness for cachic: mock CDN, differential 
 publish = false
 
 [dependencies]
+clap = { workspace = true }
+reqwest.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 bytes.workspace = true

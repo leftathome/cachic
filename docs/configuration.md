@@ -16,6 +16,9 @@ Sizes accept nginx spellings (`1000g`, `2g`, `1m`) which are binary multiples, m
 | `CACHE_MEM_SIZE` | `--cache-mem-size` | `2g` | RAM tier capacity for hot slices. Hard cap. Index memory is reported separately and is roughly 400 bytes per stored slice; see the sizing guide |
 | `CACHE_MAX_AGE` | `--cache-max-age` | `3560d` | How long an object stays cacheable |
 | `CACHE_SLICE_SIZE` | `--cache-slice-size` | `1m` | Slice size. Persisted with the cache; changing it requires FORCE_CONFIG=true (FR-10) |
+| `CACHE_DIRECT_IO` | `--cache-direct-io` | `false` | Bypass the page cache for disk-tier I/O.  Off by default, which means every slice written to disk is also held in the kernel's page cache. That is double caching - cachic already has its own RAM tier - and under a cgroup limit it counts toward the container's working set, so memory use looks like it is climbing without bound when most of it is reclaimable. Turn this on to make the RAM tier the only place slices are cached in memory, at the cost of losing the kernel's read caching for anything the RAM tier misses. Linux only; ignored elsewhere. |
+| `CACHE_FLUSHERS` | `--cache-flushers` | `4` | Disk-tier flush threads.  foyer drops a disk write when its flushers cannot keep up, so this sets the write rate the cache can absorb before it starts silently losing slices. The default handles a 5 Gbit fill; raise it with the buffer pool for 10 Gbit and above. |
+| `CACHE_BUFFER_POOL` | `--cache-buffer-pool` | `128m` | Disk-tier flush buffer pool, shared across flushers |
 | `CACHE_DATA_DIR` | `--cache-data-dir` | `/data/cache` | Cache data directory |
 | `MIN_FREE_DISK` | `--min-free-disk` | `10g` | Reduce the effective disk cap when the filesystem falls below this much free space (FR-46) |
 | `FORCE_CONFIG` | `--force-config` | `false` | Adopt the current settings even though they disagree with the cache directory. Existing slices become unreachable |

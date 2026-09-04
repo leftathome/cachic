@@ -26,9 +26,14 @@ pub struct MockDns {
 }
 
 impl MockDns {
-    /// Answer every `A` query with `answer`.
+    /// Answer every `A` query with `answer`, on an ephemeral port.
     pub async fn start(answer: Ipv4Addr) -> std::io::Result<Self> {
-        let socket = UdpSocket::bind(("127.0.0.1", 0)).await?;
+        Self::start_on(SocketAddr::from(([127, 0, 0, 1], 0)), answer).await
+    }
+
+    /// Answer every `A` query with `answer`, on a specific address.
+    pub async fn start_on(addr: SocketAddr, answer: Ipv4Addr) -> std::io::Result<Self> {
+        let socket = UdpSocket::bind(addr).await?;
         let addr = socket.local_addr()?;
         let queries = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));

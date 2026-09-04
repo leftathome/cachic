@@ -68,7 +68,12 @@ name = "foyerprobe"
 path = "examples/foyerprobe.rs"
 
 [features]
-default = []
+# jemalloc, on by default. Under sustained load glibc's per-thread arenas fragment badly with
+# 1 MiB slice allocations: measured RSS was 1740 MiB against a 256 MiB memory tier, versus 787 MiB
+# with jemalloc, for no measurable throughput difference. The dependency only exists on gnu
+# targets, so this feature is inert on musl - see docs/known-limitations.md.
+jemalloc = ["dep:tikv-jemallocator"]
+default = ["jemalloc"]
 # Exposes test helpers to integration tests and other crates' tests.
 test-support = []
 
@@ -79,3 +84,6 @@ serde_json.workspace = true
 cachic-testkit = { path = "../cachic-testkit" }
 reqwest.workspace = true
 tokio.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+tikv-jemallocator = { version = "0.7.0", optional = true }

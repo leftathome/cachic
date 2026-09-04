@@ -36,6 +36,8 @@ spec:
       securityContext:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         runAsUser: {{ .Values.securityContext.runAsUser }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+        fsGroupChangePolicy: {{ .Values.securityContext.fsGroupChangePolicy }}
       containers:
         - name: cachic
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"

@@ -40,6 +40,10 @@ use cachic_testkit::{
 };
 use clap::Parser;
 
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(Parser, Debug)]
 #[command(name = "soak", about = "cachic soak test")]
 struct Args {
