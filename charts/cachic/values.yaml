@@ -89,13 +89,22 @@ metrics:
 # Per-service rules, rendered into a ConfigMap and mounted as the rules file.
 serviceRules: {}
 
+# Sized for the "Medium" profile in docs/sizing.md: up to 32 clients at cache.memSize 2g.
+#
+# The old guidance here derived memory from the object index at roughly 400 bytes per slice, which
+# predicted ~2.1Gi and under-predicted by half; rc1 was then OOMKilled at these limits. Measured,
+# resident memory is cache.memSize plus a flat ~700Mi that does not vary with tier size or client
+# count, so the rule is memSize + 700Mi for the request and about a third more for the limit.
+#
+# Measured peak at these settings: 2752Mi. Change these together with cache.memSize - a limit
+# equal to the tier will be OOMKilled.
 resources:
   requests:
-    cpu: 500m
-    # Should exceed cache.memSize plus the object index, which is roughly 400 bytes per stored
-    # slice - about 760Mi for a 2TB cache at 1m slices.
+    cpu: 1
     memory: 3Gi
   limits:
+    # CPU costs about 0.5 cores per Gbps served, so this permits roughly 8 Gbps before throttling.
+    cpu: 4
     memory: 4Gi
 
 nodeSelector: {}

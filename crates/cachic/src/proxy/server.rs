@@ -257,6 +257,7 @@ async fn handle(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
 
+    let elapsed = started.elapsed();
     if let Some(metrics) = &config.metrics {
         metrics
             .requests
@@ -266,6 +267,18 @@ async fn handle(
             .bytes_served
             .with_label_values(&[&service, &cache_status])
             .inc_by(bytes);
+        // End-to-end, so a slow request can be attributed. upstream_seconds times only the origin
+        // leg, which on a cache hit is not involved at all.
+        metrics
+            .request_seconds
+            .with_label_values(&[&service, &cache_status])
+            .observe(elapsed.as_secs_f64());
+        // The status code is a different question from the cache status, and rc1 exported only
+        // the latter - a burst of 502s was invisible in metrics.
+        metrics
+            .responses
+            .with_label_values(&[&service, status.to_string().as_str()])
+            .inc();
     }
 
     crate::telemetry::logs::AccessEvent {
@@ -278,7 +291,7 @@ async fn handle(
         status,
         bytes,
         cache_status,
-        upstream_seconds: started.elapsed().as_secs_f64(),
+        upstream_seconds: elapsed.as_secs_f64(),
         user_agent,
         timestamp: crate::telemetry::logs::clf_timestamp(crate::store::index::now_secs()),
     }

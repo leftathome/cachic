@@ -6,6 +6,7 @@
 
 - [Quickstart with compose](./quickstart.md)
 - [Kubernetes](./kubernetes.md)
+- [Sizing](sizing.md)
 - [Configuration reference](./configuration.md)
 - [Migrating from lancache](./migration-from-lancache.md)
 
@@ -15,8 +16,10 @@
 - [Known limitations](./known-limitations.md)
 - [Definition of done](./definition-of-done.md)
 - [Release-candidate test plan](./rc-test-plan.md)
+- [RC test results — v0.1.0-rc1](./rc-test-results.md)
 - [Benchmarks](./benchmarks/README.md)
   - [M0 measurements](./benchmarks/m0/README.md)
+  - [orac parity run](./benchmarks/orac/README.md)
 
 # Decisions
 

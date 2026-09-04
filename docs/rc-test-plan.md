@@ -15,9 +15,22 @@ Record, and keep with the results:
 - CPU, RAM, and the storage device backing the cache volume
 - Network between client and cache, and between cache and origin
 - `lancachenet/monolithic` version, for the comparison runs
+- The host's glibc version (`ldd --version`) if running the tarball rather than the image
 
 Every throughput number is only valid for the hardware it was taken on. A result filed without its
 hardware is not a result.
+
+**Prerequisites this plan actually needs:**
+
+- **Section A needs an amd64 host.** `lancachenet/monolithic` publishes amd64 only — the manifest
+  returns the same digest for `linux/arm64`, so the platform flag is a no-op and there is nothing
+  to compare against on an arm64-only deployment. Sections B through E run anywhere.
+- **The measurement harnesses ship separately.** Download `cachic-tools-<tag>-<target>.tar.gz`
+  from the release alongside the main tarball. It contains `bench`, `soak`, `loadtest` and
+  `origin`. They are test tools: they generate traffic and synthetic data, so run them from a
+  client host, not on the cache serving real clients.
+- **The tarball needs glibc 2.36 or newer** (Debian 12, Ubuntu 22.10+). On anything older, use the
+  container image. See [known limitations](known-limitations.md).
 
 ---
 
@@ -56,10 +69,27 @@ runs. Throughput noise is one-sided: interference only ever makes you slower.
 | S7 | Eviction at cap, 24 h mixed replay | Hit-ratio and latency stability |
 
 ```sh
-cachic-bench --scenario all --clients 32 --object-mib 20480 --dir /path/to/scratch
+# S1-S7 against a locally linked cache, emitting CSV with the CPU model in its first rows.
+./bench --scenario all --clients 32 --object-mib 20480 --dir /path/to/scratch
 ```
 
-The harness ships as the `bench` example and emits CSV with the CPU model in its first rows.
+`bench` links the cache into its own process, so it measures cachic and cannot drive monolithic.
+For the side-by-side, point `loadtest` at each engine in turn — it drives anything that speaks
+HTTP, so both are measured by the same client under the same conditions:
+
+```sh
+# a mock origin, plus a DNS server answering every CDN name with its address
+./origin --address <origin-addr> --http-port 80 --dns-port 53
+
+# then, alternating, against each engine in turn
+./loadtest --target http://<cache-addr>:80 --clients 32 --seconds 300 \
+           --objects 24 --object-mib 256
+```
+
+Run each engine cold and again warm, and report both. The rc1 report compared a cold cachic
+against a differently configured monolithic and concluded cachic ran at 62% of nginx; measured
+warm and matched, the two are within noise of each other. **Cold and warm are different claims -
+label which one a number is.**
 
 ### A3. What falsifies the claim
 
@@ -105,6 +135,9 @@ load-balancer address and storage settings substituted.
 - **Deliberately** change `cache.sliceSize` and confirm the pod refuses to start with a message
   naming both values and `FORCE_CONFIG`. A pod that starts here is a bug: it would reinterpret
   existing slices under a new size.
+- Then recover from it by setting `forceConfig: true`, and confirm the pod starts and refills. In
+  rc1 the refusal worked and there was no way out of it from the chart, so this step led into a
+  dead end.
 
 ### B4. What falsifies the claim
 
@@ -164,7 +197,7 @@ Seven days of continuous mixed traffic, with a working set larger than the disk 
 runs throughout. A soak that never evicts does not test eviction.
 
 ```sh
-cachic-soak --seconds 604800 --clients 32 --disk-mib <size> --dir /path/to/scratch
+./soak --seconds 604800 --clients 32 --disk-mib <size> --dir /path/to/scratch
 ```
 
 Every read is verified against the generator, so corruption fails the run at the moment it appears
@@ -199,6 +232,10 @@ Development measurements show writes being silently dropped above roughly 600 Mi
 default flusher settings; cachic ships four flushers and a 128 MiB buffer pool, which covered
 every rate tested up to 10 Gbit.
 
+Both are now settable — `CACHE_FLUSHERS` and `CACHE_BUFFER_POOL`, through the chart's `extraEnv`.
+In rc1 they were struct fields with no flag, no environment variable and no chart value, so the
+tuning this section asks for was not actually possible.
+
 ### E1. Run
 
 Fill at the bar and at whatever your link actually provides. Then, if the link allows, at 1, 2.5
@@ -214,13 +251,55 @@ raise the flusher count and buffer pool.
 
 ---
 
+## F. Regressions from rc1
+
+Every one of these was a real failure on the rc1 deployment. They are cheap to check and each has
+a single unambiguous outcome, so run them first: a failure here means the fix did not land, which
+is worth knowing before spending a week on the soak.
+
+| | What rc1 did | Check | Fails if |
+|---|---|---|---|
+| F1 | Tarball demanded `GLIBC_2.38` and would not start on Debian 12 or Ubuntu 22.04 | `objdump -T cachic \| grep -oE 'GLIBC_[0-9.]+' \| sort -uV \| tail -1` | Anything above `GLIBC_2.36` |
+| F5 | `helm test` pulled `curlimages/curl:latest` | `helm test <release>` on a cluster whose registry mirror blocks unpinned Docker Hub pulls | The test pod cannot pull its image |
+| F6 | Four dashboard panels rendered one series instead of two | Open the dashboard: "Bytes served vs fetched", "Silently dropped disk writes", "Upstream fetch latency", "In-flight fetches and connections" | Any of the four shows a single series |
+| F7 | Pod CrashLooped on a fresh PVC: `cannot write /data/cache/CONFIG: Permission denied` | Install onto a **freshly provisioned** block volume | The pod does not reach Ready |
+| F8 | Per-CDN panels collapsed to one flat series named after the Kubernetes Service | Scrape through a kube-prometheus-stack ServiceMonitor and confirm `cdn_service` survives, with no `exported_*` label | `exported_cdn_service` appears, or panels show one series |
+| F9 | Six documented options were unreachable on Kubernetes | Set one through `extraEnv` (say `STALE_ON_ERROR=false`) and confirm it reaches the process | The value does not take effect |
+| F10 | Upstream fetches connected to the address the **system** resolver returned, ignoring `UPSTREAM_DNS` | Point `UPSTREAM_DNS` at a resolver that answers a CDN name differently from the system resolver, then check which origin is actually reached | Traffic reaches the system resolver's address |
+| F11 | OOMKilled mid-benchmark at the chart's own defaults | Run section D at chart defaults and watch container memory | Any OOMKill, or resident memory above `cache.memSize + 1Gi` |
+
+F10 deserves the most care, because it is the one with a security consequence rather than only an
+availability one: while the two resolvers disagreed, the address guard was inspecting one address
+and the socket was connecting to another, which makes the guard bypassable rather than merely
+ineffective.
+
+### F12. Sizing
+
+[docs/sizing.md](sizing.md) claims resident memory is `CACHE_MEM_SIZE` plus a flat ~700 MiB,
+independent of tier size and client count, and about 0.5 CPU cores per Gbps served. Both were
+measured on a single developer machine against a mock origin over loopback, which is the weakest
+evidence in this plan.
+
+Confirm on real hardware at two tier sizes and two client counts. Report peak RSS under load, not
+at idle. **If the overhead is not flat, the t-shirt table is wrong and the chart defaults with
+it.**
+
+---
+
 ## Reporting
 
 For each section: **pass**, **fail**, or **not run**, with the numbers and the hardware. Publish
 losses as well as wins — a report showing only favourable scenarios is not a parity claim.
 
-The three results that change the code:
+The results that change the code:
 
-1. monolithic's S2 aggregate Gbps → the performance gate's floor constant.
-2. The rate at which the overflow counter becomes non-zero → the shipped flusher defaults.
+1. monolithic's S2 aggregate Gbps → the performance gate's floor constant, replacing the
+   provisional one. This is still the single most valuable number this plan produces.
+2. The rate at which the overflow counter becomes non-zero → the shipped `CACHE_FLUSHERS` and
+   `CACHE_BUFFER_POOL` defaults, both now settable.
 3. Any service caching on monolithic but not on cachic → a per-service rule.
+4. Peak RSS against `CACHE_MEM_SIZE` at two tier sizes → the sizing table and chart defaults.
+5. Warm throughput once the working set is several times the RAM tier. Development measured
+   cachic at about 88% of monolithic there, against parity or better at smaller working sets, and
+   traced it to roughly 1.6x read amplification on the disk tier. Whether that survives on real
+   NVMe is unknown.

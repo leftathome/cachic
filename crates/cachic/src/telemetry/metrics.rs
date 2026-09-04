@@ -27,7 +27,8 @@ use std::sync::Arc;
 
 use mixtrics::registry::prometheus_0_14::PrometheusMetricsRegistry;
 use prometheus::{
-    Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, Opts, Registry, TextEncoder,
+    Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry,
+    TextEncoder,
 };
 
 /// Every metric cachic records itself.
@@ -57,6 +58,42 @@ pub struct Metrics {
     pub guard_refusals: IntCounterVec,
     /// Open client connections.
     pub connections: IntGauge,
+
+    // --- Added after the rc1 deployment, which could not answer "why is this slow", "is it
+    // erroring", "which CDN is saturated", "am I serving stale" or "how full is the disk" from
+    // metrics alone. Each of these exists because an operator asked one of those questions.
+    /// End-to-end service time by service and cache status.
+    ///
+    /// Distinct from `upstream_seconds`, which times only the origin leg. Without both, a slow
+    /// request cannot be attributed to the store, the origin, or writing to the client.
+    pub request_seconds: HistogramVec,
+    /// Responses by service and HTTP status code. The cache-status label is a different question.
+    pub responses: IntCounterVec,
+    /// Upstream failures by service and kind, so a timeout is distinguishable from a 5xx.
+    pub upstream_errors: IntCounterVec,
+    /// Responses served from cache because the origin failed (FR-22).
+    pub stale_responses: IntCounterVec,
+    /// Slice fetches in flight, per service, against that service's ceiling (FR-09).
+    pub upstream_inflight_service: IntGaugeVec,
+    /// The per-service ceiling, so saturation is a ratio rather than a number needing context.
+    pub upstream_limit_service: IntGaugeVec,
+    /// Requests still being served. During a drain this is what shutdown is waiting for.
+    pub requests_in_flight: IntGauge,
+    /// 1 while draining, 0 otherwise.
+    pub draining: IntGauge,
+    /// Bytes the disk tier is allowed to use, after the free-space guard clamps the configured
+    /// size. Below the configured value means the guard is holding back.
+    pub store_capacity_bytes: IntGauge,
+    /// Free space on the filesystem backing the cache.
+    pub disk_available_bytes: IntGauge,
+    /// Total size of that filesystem.
+    pub disk_total_bytes: IntGauge,
+    /// 1 while the free-space guard is clamping the configured disk size.
+    pub disk_guard_engaged: IntGauge,
+    /// Objects the index knows about.
+    pub index_objects: IntGauge,
+    /// Bytes those objects account for. With `store_capacity_bytes`, this is "how full am I".
+    pub index_bytes: IntGauge,
 }
 
 /// Cache status label values. Closed set, matching `X-Cache`.
@@ -117,6 +154,73 @@ impl Metrics {
         )?;
         let connections = IntGauge::new("cachic_client_connections", "Open client connections")?;
 
+        let request_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "cachic_request_seconds",
+                "End-to-end request service time in seconds",
+            )
+            // A cache hit should land in the first few buckets; the long tail is a cold fill of a
+            // large range, which is why this reaches further out than the upstream histogram.
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+            ]),
+            &["cdn_service", "status"],
+        )?;
+        let responses = counter(
+            "cachic_responses_total",
+            "Responses by service and HTTP status code",
+            &["cdn_service", "code"],
+        )?;
+        let upstream_errors = counter(
+            "cachic_upstream_errors_total",
+            "Upstream failures by service and kind",
+            &["cdn_service", "kind"],
+        )?;
+        let stale_responses = counter(
+            "cachic_stale_responses_total",
+            "Responses served from cache because the origin failed",
+            &["cdn_service"],
+        )?;
+        let gauge_vec = |name: &str, help: &str, labels: &[&str]| {
+            IntGaugeVec::new(Opts::new(name, help), labels)
+        };
+        let upstream_inflight_service = gauge_vec(
+            "cachic_upstream_inflight_service",
+            "Slice fetches in flight per service",
+            &["cdn_service"],
+        )?;
+        let upstream_limit_service = gauge_vec(
+            "cachic_upstream_limit_service",
+            "Configured concurrent upstream fetch ceiling per service",
+            &["cdn_service"],
+        )?;
+        let requests_in_flight = IntGauge::new(
+            "cachic_requests_in_flight",
+            "Requests currently being served",
+        )?;
+        let draining = IntGauge::new("cachic_draining", "1 while draining, 0 otherwise")?;
+        let store_capacity_bytes = IntGauge::new(
+            "cachic_store_capacity_bytes",
+            "Disk tier capacity after the free-space guard",
+        )?;
+        let disk_available_bytes = IntGauge::new(
+            "cachic_disk_available_bytes",
+            "Free space on the filesystem backing the cache",
+        )?;
+        let disk_total_bytes = IntGauge::new(
+            "cachic_disk_total_bytes",
+            "Total size of the filesystem backing the cache",
+        )?;
+        let disk_guard_engaged = IntGauge::new(
+            "cachic_disk_guard_engaged",
+            "1 while the free-space guard is clamping the configured disk size",
+        )?;
+        let index_objects = IntGauge::new("cachic_index_objects", "Objects in the index")?;
+        let index_bytes = IntGauge::new(
+            "cachic_index_bytes",
+            "Bytes accounted for by indexed objects",
+        )?;
+
         for c in [
             Box::new(requests.clone()) as Box<dyn prometheus::core::Collector>,
             Box::new(bytes_served.clone()),
@@ -127,6 +231,20 @@ impl Metrics {
             Box::new(generation_bumps.clone()),
             Box::new(guard_refusals.clone()),
             Box::new(connections.clone()),
+            Box::new(request_seconds.clone()),
+            Box::new(responses.clone()),
+            Box::new(upstream_errors.clone()),
+            Box::new(stale_responses.clone()),
+            Box::new(upstream_inflight_service.clone()),
+            Box::new(upstream_limit_service.clone()),
+            Box::new(requests_in_flight.clone()),
+            Box::new(draining.clone()),
+            Box::new(store_capacity_bytes.clone()),
+            Box::new(disk_available_bytes.clone()),
+            Box::new(disk_total_bytes.clone()),
+            Box::new(disk_guard_engaged.clone()),
+            Box::new(index_objects.clone()),
+            Box::new(index_bytes.clone()),
         ] {
             registry.register(c)?;
         }
@@ -147,6 +265,20 @@ impl Metrics {
                 generation_bumps,
                 guard_refusals,
                 connections,
+                request_seconds,
+                responses,
+                upstream_errors,
+                stale_responses,
+                upstream_inflight_service,
+                upstream_limit_service,
+                requests_in_flight,
+                draining,
+                store_capacity_bytes,
+                disk_available_bytes,
+                disk_total_bytes,
+                disk_guard_engaged,
+                index_objects,
+                index_bytes,
             },
             foyer_registry,
         ))
@@ -247,6 +379,28 @@ mod tests {
         m.generation_bumps.with_label_values(&["steam"]).inc();
         m.guard_refusals.with_label_values(&["private"]).inc();
         m.connections.set(7);
+        m.request_seconds
+            .with_label_values(&["steam", "HIT"])
+            .observe(0.01);
+        m.responses.with_label_values(&["steam", "206"]).inc();
+        m.upstream_errors
+            .with_label_values(&["steam", "timeout"])
+            .inc();
+        m.stale_responses.with_label_values(&["steam"]).inc();
+        m.upstream_inflight_service
+            .with_label_values(&["steam"])
+            .set(2);
+        m.upstream_limit_service
+            .with_label_values(&["steam"])
+            .set(8);
+        m.requests_in_flight.set(5);
+        m.draining.set(0);
+        m.store_capacity_bytes.set(1);
+        m.disk_available_bytes.set(1);
+        m.disk_total_bytes.set(1);
+        m.disk_guard_engaged.set(0);
+        m.index_objects.set(1);
+        m.index_bytes.set(1);
 
         let text = m.render().unwrap();
         for name in [
@@ -259,6 +413,20 @@ mod tests {
             "cachic_generation_bumps_total",
             "cachic_upstream_guard_refusals_total",
             "cachic_client_connections",
+            "cachic_request_seconds",
+            "cachic_responses_total",
+            "cachic_upstream_errors_total",
+            "cachic_stale_responses_total",
+            "cachic_upstream_inflight_service",
+            "cachic_upstream_limit_service",
+            "cachic_requests_in_flight",
+            "cachic_draining",
+            "cachic_store_capacity_bytes",
+            "cachic_disk_available_bytes",
+            "cachic_disk_total_bytes",
+            "cachic_disk_guard_engaged",
+            "cachic_index_objects",
+            "cachic_index_bytes",
         ] {
             assert!(text.contains(name), "{name} is not exported");
         }

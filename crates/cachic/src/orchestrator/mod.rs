@@ -115,6 +115,9 @@ pub struct Orchestrator {
     readahead_policy: readahead::ReadaheadPolicy,
     /// Serve cached slices when the origin fails (FR-22).
     stale_on_error: bool,
+    /// Optional, because the orchestrator is constructed directly in a great many tests and none
+    /// of them care. Absent means the counters simply do not move.
+    metrics: Option<Arc<crate::telemetry::metrics::Metrics>>,
 }
 
 impl Orchestrator {
@@ -135,6 +138,7 @@ impl Orchestrator {
             fills: filler::FillRegistry::new(),
             readahead_policy: readahead::ReadaheadPolicy::new(readahead.max(1)),
             stale_on_error: true,
+            metrics: None,
         }
     }
 
@@ -142,6 +146,50 @@ impl Orchestrator {
     pub fn with_stale_on_error(mut self, enabled: bool) -> Self {
         self.stale_on_error = enabled;
         self
+    }
+
+    /// Permits still available for `service`, or `None` if it has no ceiling.
+    ///
+    /// Exposed so the metrics sampler can report per-service saturation without the client being
+    /// handed around; the orchestrator owns it.
+    pub fn service_permits(&self, service: &str) -> Option<usize> {
+        self.upstream.service_permits(service)
+    }
+
+    /// Record upstream failures and stale responses.
+    ///
+    /// Without this an operator can see that requests are slow but not that the origin is
+    /// failing, nor that the cache is quietly covering for it - which is the moment you most
+    /// want to know.
+    pub fn with_metrics(mut self, metrics: Arc<crate::telemetry::metrics::Metrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// Classify a failure for the `kind` label. A closed set: an unbounded label is a cardinality
+    /// leak, and "which of these five things happened" is the question being asked.
+    fn error_kind(error: &OrchestratorError) -> &'static str {
+        use crate::upstream::client::UpstreamError;
+        match error {
+            OrchestratorError::Upstream(UpstreamError::Status { status, .. }) => {
+                if status.is_server_error() {
+                    "origin_5xx"
+                } else {
+                    "origin_4xx"
+                }
+            }
+            OrchestratorError::Upstream(UpstreamError::Request { source, .. }) => {
+                if source.is_timeout() {
+                    "timeout"
+                } else if source.is_connect() {
+                    "connect"
+                } else {
+                    "request"
+                }
+            }
+            OrchestratorError::Upstream(UpstreamError::Resolve(_)) => "resolve",
+            _ => "other",
+        }
     }
 
     /// Invalidate an object because its validators changed (FR-14).
@@ -363,6 +411,10 @@ impl Orchestrator {
         headers: HeaderMap,
         index: u32,
     ) -> Result<SliceValue, OrchestratorError> {
+        // Kept for the metric labels below: the fetch path consumes `service`, and an upstream
+        // failure still has to be attributed to a CDN.
+        let service_label = plan.service.clone();
+
         // A range-ignoring origin cannot serve one slice, so the whole object is filled once and
         // this request waits only for the slice it needs (FR-13, FR-32).
         if plan.meta.no_ranges {
@@ -474,6 +526,12 @@ impl Orchestrator {
         match result {
             Ok(value) => Ok(value),
             Err(e) => {
+                if let Some(metrics) = &self.metrics {
+                    metrics
+                        .upstream_errors
+                        .with_label_values(&[&service_label, Self::error_kind(&e)])
+                        .inc();
+                }
                 // A transient origin failure should not fail a slice we can serve from disk.
                 if self.stale_on_error && is_transient_orchestrator_error(&e) {
                     if let Ok(Some(value)) = self.store.get(&key).await {
@@ -481,6 +539,12 @@ impl Orchestrator {
                             slice = index,
                             "serving a cached slice through an upstream failure"
                         );
+                        if let Some(metrics) = &self.metrics {
+                            metrics
+                                .stale_responses
+                                .with_label_values(&[&service_label])
+                                .inc();
+                        }
                         return Ok(value);
                     }
                 }

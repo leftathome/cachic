@@ -33,15 +33,29 @@ leaving it to whoever commits the file.
 The harness drives cachic only. It deliberately does **not** drive monolithic: orchestrating two
 engines against one volume in alternating runs belongs to the benchmark host, not to a binary that
 would have to shell out to Docker to do it. `docs/benchmarks/dev/` holds development-host runs;
-the parity report will live alongside it once it exists.
+[`orac/`](orac/README.md) holds the first parity run.
+
+That split leaves a real gap: the plan's §A2 hands the tester a `cachic-bench` command line, but no
+binary in the release can produce a monolithic number, and nothing in this repo orchestrates the
+two engines. Whoever runs §A has to build the driver first. The orac run describes the one it used.
 
 ## What has been measured
 
-**Nothing against monolithic yet.** The parity report is TASK-25's remaining work and needs the
-reference hardware. Until it exists, the floor constant in the performance gate is a provisional
-backstop rather than nginx's measured throughput — see [ADR 0009](../adr/0009-performance-floor.md).
+**One run against monolithic, on homelab hardware, not the reference rig.** See
+[`orac/`](orac/README.md) — both engines on the same host in alternating runs with the volume wiped
+between them, taken during the v0.1.0-rc1 RC test. It does **not** settle the performance gate:
+throughput there was bounded by a 1 GbE client at ~0.89 Gbps, so it shows neither engine is slower
+than the link and cannot show which is faster. The floor constant remains a provisional backstop —
+see [ADR 0009](../adr/0009-performance-floor.md).
 
-Two development-host runs exist and should be read as shape, not as results:
+What that run does establish, because they are ratios rather than rates: cold-fill TTFB is **15x
+better than monolithic** (135.8 ms vs 2039.1 ms at p50), integrity was clean on both engines, and
+**upstream amplification came out at exactly 1.000 for both** — so the coalescing advantage claimed
+below did not reproduce. Read the caveat in [`orac/`](orac/README.md) before drawing a conclusion
+from that: its origin had no added latency, which is the condition most favourable to
+`proxy_cache_lock`, and a shaped origin is the test that would actually separate the two.
+
+Two development-host runs also exist and should be read as shape, not as results:
 
 - [`m0/`](m0/README.md) — the M0 spike measurements, including a benchmark that produced
   confident, reproducible, completely wrong numbers, and what was wrong with it.

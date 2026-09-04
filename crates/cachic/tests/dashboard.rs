@@ -74,6 +74,24 @@ async fn every_metric_the_dashboard_queries_is_exported() {
     metrics.generation_bumps.with_label_values(&["steam"]).inc();
     metrics.guard_refusals.with_label_values(&["private"]).inc();
     metrics.connections.set(0);
+    metrics
+        .request_seconds
+        .with_label_values(&["steam", "HIT"])
+        .observe(0.01);
+    metrics.responses.with_label_values(&["steam", "206"]).inc();
+    metrics
+        .upstream_errors
+        .with_label_values(&["steam", "timeout"])
+        .inc();
+    metrics.stale_responses.with_label_values(&["steam"]).inc();
+    metrics
+        .upstream_inflight_service
+        .with_label_values(&["steam"])
+        .set(0);
+    metrics
+        .upstream_limit_service
+        .with_label_values(&["steam"])
+        .set(0);
 
     let scratch = cachic::test_support::Scratch::new("dashboard");
     let store = cachic::store::hybrid::SliceStore::open_with_metrics(

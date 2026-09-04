@@ -1,0 +1,62 @@
+scenario,metric,value,unit,notes
+environment,hardware,Talos amd64 node (johnny),,every number below is only valid for this hardware
+environment,cache_host,johnny,,amd64; monolithic ships amd64 only so the host was forced
+environment,client,in-cluster pod on a separate node,,a LAN workstation client measured 69 Mbit/s and was discarded as client-bound
+environment,client_link_ceiling,0.89,Gbps,warm cache hit measured end to end; every throughput row below is near this
+environment,origin,nginx 1.27 in-cluster,,NO added latency; see the coalescing caveat in README.md
+environment,object_size,1024,MiB,one generated incompressible file served for every path
+environment,slice_size,1,MiB,
+environment,clients,16,count,protocol asks for 32; 16 was the most a 40g tier holds for S3 without eviction
+environment,disk_tier,40,GiB,
+environment,memory_tier,2,GiB,
+environment,memory_limit,8,GiB,raised from the chart default of 4Gi which was OOMKilled; see F11
+environment,cachic_version,0.1.0-rc1,,ghcr.io/leftathome/cachic:0.1.0-rc1
+environment,monolithic_version,sha256:37f28b362c939a333f3e4f12aa8ca80604cf75050b2f190d0ad972b2fedce00e,,lancachenet/monolithic
+environment,protocol,alternating; volume wiped between engines,,same host and same load-balancer address for both
+S1,throughput,0.6765,Gbps,cachic; warm; single client; whole object
+S1,throughput,0.6891,Gbps,monolithic; warm; single client; whole object
+S1,ttfb_p50,12.6044,ms,cachic
+S1,ttfb_p50,12.3251,ms,monolithic
+S1,integrity_failures,0,count,cachic; 1 checked
+S1,integrity_failures,0,count,monolithic; 1 checked
+S2,throughput,0.7719,Gbps,cachic; warm; 16 clients; same object
+S2,throughput,0.7781,Gbps,monolithic; warm; 16 clients; same object
+S2,ttfb_p50,211.9014,ms,cachic
+S2,ttfb_p50,188.7587,ms,monolithic
+S2,ttfb_p99,526.6428,ms,cachic
+S2,ttfb_p99,624.6041,ms,monolithic
+S2,integrity_failures,0,count,cachic; 16 checked
+S2,integrity_failures,0,count,monolithic; 16 checked
+S3,throughput,0.7884,Gbps,cachic; warm; 16 clients; 16 distinct objects; wiped volume
+S3,throughput,0.8222,Gbps,cachic; repeat on the same volume
+S3,throughput,0.6906,Gbps,cachic; DISCARDED - taken while memory climbed toward the F11 OOM
+S3,throughput,0.7677,Gbps,monolithic; wiped volume
+S3,throughput,0.8061,Gbps,monolithic; repeat on the same volume
+S3,ttfb_p50,203.3734,ms,cachic; wiped volume
+S3,ttfb_p50,195.9183,ms,cachic; repeat
+S3,ttfb_p50,192.8215,ms,monolithic; wiped volume
+S3,ttfb_p50,483.8673,ms,monolithic; repeat
+S3,integrity_failures,0,count,cachic; 16 checked per run
+S3,integrity_failures,0,count,monolithic; 16 checked per run
+S4,throughput,0.7889,Gbps,cachic; cold fill; 8 clients; same object
+S4,throughput,0.7175,Gbps,monolithic; cold fill; 8 clients; same object
+S4,ttfb_p50,135.7528,ms,cachic; THE result - 15x better than monolithic and a ratio not a rate
+S4,ttfb_p50,2039.0978,ms,monolithic; proxy_cache_lock makes the other seven wait
+S4,ttfb_p99,279.1472,ms,cachic
+S4,ttfb_p99,2540.1339,ms,monolithic
+S4,upstream_amplification,1.000,ratio,cachic; 1024 origin slice requests; 1073741824 bytes for 8 clients
+S4,upstream_amplification,1.000,ratio,monolithic; identical - see the coalescing caveat in README.md
+S4,integrity_failures,0,count,cachic; 8 checked
+S4,integrity_failures,0,count,monolithic; 8 checked
+S5,throughput,0.6885,Gbps,cachic; random 64KiB-8MiB ranges; fixed seed so both engines got identical ranges
+S5,throughput,0.7230,Gbps,monolithic; same ranges
+S5,ttfb_p50,130.7343,ms,cachic
+S5,ttfb_p50,120.9079,ms,monolithic
+S5,ttfb_p99,585.0418,ms,cachic
+S5,ttfb_p99,420.6378,ms,monolithic
+S6,index_recovery,397.5,ms,cachic; populated cache; 639 blocks; 21569 entries; A3 budget is 5 min per 2TB
+S6,refill_after_restart,0,bytes,cachic; origin request count 1024 before pod delete and 1024 after
+process,peak_memory,5663,MiB,cachic; 8Gi limit; 2g configured RAM tier
+process,peak_memory,4973,MiB,cachic; clean re-run after 32 GiB of traffic
+process,peak_memory,4084,MiB,cachic; OOMKilled here at the chart default 4Gi limit; see F11
+process,peak_memory,397,MiB,monolithic; identical workload; nginx leans on the kernel page cache

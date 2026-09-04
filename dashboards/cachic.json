@@ -394,6 +394,243 @@
         },
         "overrides": []
       }
+    },
+    {
+      "id": 10,
+      "title": "Request latency",
+      "description": "End-to-end service time, which is what a client actually experiences. Distinct from upstream latency: a cache hit never touches the origin, so a rise here with flat upstream latency points at the store or at writing to the client.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, cdn_service) (rate(cachic_request_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{cdn_service}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, cdn_service) (rate(cachic_request_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{cdn_service}}",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "Responses by status code",
+      "description": "HTTP status, which is a different question from cache status. A burst of 5xx is invisible in the cache-status panels.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 29,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(cachic_responses_total[5m]))",
+          "legendFormat": "{{code}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Upstream failures and stale responses",
+      "description": "Why the origin is failing, and whether the cache is covering for it. Stale responses climbing means clients are being served through an outage they cannot see - good, but you should know.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 29,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(cachic_upstream_errors_total[5m]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "sum(rate(cachic_stale_responses_total[5m]))",
+          "legendFormat": "stale served",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Cache occupancy and the disk guard",
+      "description": "How full the cache is against the cap it is allowed to use. When cachic_disk_guard_engaged is 1 the free-space guard has clamped the configured size and the cache will not grow further.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "cachic_index_bytes",
+          "legendFormat": "indexed",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "cachic_store_capacity_bytes",
+          "legendFormat": "capacity after guard",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "cachic_disk_available_bytes",
+          "legendFormat": "filesystem free",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "cachic_disk_guard_engaged",
+          "legendFormat": "guard engaged (0/1)",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "title": "Upstream saturation per service",
+      "description": "In-flight upstream fetches against each service's configured ceiling (FR-09). Touching the limit means that CDN is the bottleneck, not the cache.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 36,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "cachic_upstream_inflight_service",
+          "legendFormat": "{{cdn_service}} in flight",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "cachic_upstream_limit_service",
+          "legendFormat": "{{cdn_service}} limit",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Drain",
+      "description": "Requests still being served, and whether shutdown is waiting on them. A drain that does not reach zero is a stuck request, and the pod will be killed rather than exiting cleanly.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 36,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "expr": "cachic_requests_in_flight",
+          "legendFormat": "in flight",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "expr": "cachic_draining",
+          "legendFormat": "draining (0/1)",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ]
     }
   ]
 }

@@ -186,6 +186,8 @@ async fn run(config: Config) -> Result<(), Fatal> {
         );
     }
 
+    // The sampler reports saturation against these ceilings, so keep a copy.
+    let per_service_limits = per_service_inflight.clone();
     let upstream = UpstreamClient::new(
         resolver,
         ClientConfig {
@@ -215,7 +217,8 @@ async fn run(config: Config) -> Result<(), Fatal> {
             config.cache_slice_size as u32,
             config.readahead_slices,
         )
-        .with_stale_on_error(config.stale_on_error),
+        .with_stale_on_error(config.stale_on_error)
+        .with_metrics(metrics.clone()),
     );
     if !config.stale_on_error {
         tracing::info!("stale-on-error disabled: an upstream failure will fail the whole request");
@@ -231,6 +234,28 @@ async fn run(config: Config) -> Result<(), Fatal> {
 
     let connections = cachic::proxy::limits::ConnectionLimit::new(MAX_CLIENT_CONNECTIONS);
     let drain = cachic::proxy::shutdown::Drain::new();
+
+    // Levels, as opposed to events: free disk, index occupancy, in-flight requests, per-service
+    // saturation. Nothing fires when they change, so they are sampled. Without this they existed
+    // only behind the admin API and were absent from every dashboard and alert.
+    {
+        let sampler_orchestrator = orchestrator.clone();
+        cachic::telemetry::sampler::spawn(
+            cachic::telemetry::sampler::Inputs {
+                metrics: metrics.clone(),
+                index: index_handle.clone(),
+                drain: drain.clone(),
+                data_dir: config.cache_data_dir.clone(),
+                configured_disk_bytes: config.cache_disk_size,
+                min_free_bytes: config.min_free_disk,
+                per_service_limits: per_service_limits.clone(),
+                service_permits: Arc::new(move |service: &str| {
+                    sampler_orchestrator.service_permits(service)
+                }),
+            },
+            std::time::Duration::from_secs(10),
+        );
+    }
 
     let http_addr = SocketAddr::from(([0, 0, 0, 0], config.http_port));
     let server = Server::bind(

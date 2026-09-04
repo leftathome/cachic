@@ -111,11 +111,17 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
-    let mut ticker = tokio::time::interval(Duration::from_secs(args.report_secs));
-    ticker.tick().await;
-    while started.elapsed() < Duration::from_secs(args.seconds) {
-        ticker.tick().await;
-        println!("  {:>4}s elapsed", started.elapsed().as_secs());
+    // Sleep until the deadline, reporting on the way. Waiting on a bare interval tick would
+    // overshoot whenever the report interval is longer than the run: a 5-second run with a
+    // 99-second report interval took 99 seconds to finish.
+    let deadline = started + Duration::from_secs(args.seconds);
+    let report = Duration::from_secs(args.report_secs.max(1));
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        tokio::time::sleep(report.min(remaining)).await;
+        if Instant::now() < deadline {
+            println!("  {:>4}s elapsed", started.elapsed().as_secs());
+        }
     }
     stop.store(true, Ordering::Relaxed);
 
