@@ -270,7 +270,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cachic"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -297,6 +297,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tikv-jemallocator",
  "tokio",
  "toml",
  "tracing",
@@ -306,14 +307,16 @@ dependencies = [
 
 [[package]]
 name = "cachic-testkit"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "anyhow",
  "async-stream",
  "bytes",
+ "clap",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "reqwest",
  "tokio",
 ]
 
@@ -2308,6 +2311,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.7.1+5.3.1-0-g81034ce1f1373e37dc865038e1bc8eeecf559ce8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a2825c78386b4ae0314074867860ba9577875de945f05992c38815cbec327f0"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "249f09e49ab1609436f34c776e84231bead18d6a955f119f939bdc1d847561bd"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
