@@ -133,8 +133,16 @@ DNS loops (the proxy must never use the intercepting resolver).
 #### Development (`sops/development/`)
 `just` dev loop, running `mockcdn`, differential and chaos suites, fuzz targets, coverage.
 
+- **[Measuring in a container, and against monolithic](./sops/development/measuring-in-a-container.md)**
+  — how to stand up the origin, drive load against a running proxy, and what makes a number worth
+  publishing. Read before producing any throughput or memory figure.
+
 #### Deployment (`sops/deployment/`)
 Multi-arch image build, cosign/SBOM, Helm chart release, Flux HelmRelease, data-volume upgrades.
+
+- **[Cutting a release](./sops/deployment/cutting-a-release.md)** — the procedure, and the six
+  traps that each cost a tag during 0.1.0-rc1 through rc5. Read before tagging: a tag cannot be
+  reused here.
 
 **SOP Template**:
 ```markdown

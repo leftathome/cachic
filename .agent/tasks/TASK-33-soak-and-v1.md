@@ -41,3 +41,10 @@ The final gate. Everything in Appendix C is checked here, and v1.0 ships or the 
 - [ ] Every Appendix C item checked
 - [ ] v1.0.0 tagged with signed artefacts
 - [ ] 1.x backlog filed
+
+## Related SOPs
+
+- [`sops/deployment/cutting-a-release.md`](../sops/deployment/cutting-a-release.md) — the release
+  procedure and the traps that cost rc2 and rc4.
+- [`sops/development/measuring-in-a-container.md`](../sops/development/measuring-in-a-container.md)
+  — how the sizing and parity numbers were produced.
