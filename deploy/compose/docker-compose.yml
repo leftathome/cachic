@@ -34,12 +34,20 @@ services:
       UPSTREAM_DNS: ${UPSTREAM_DNS:-1.1.1.1 1.0.0.1}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Inside the container the admin API must bind the container's interface, or the published
+      # port below reaches nothing - Docker forwards to the container IP, not to its loopback.
+      # What confines it is the 127.0.0.1 host-side binding on that mapping, not this value.
+      # Because this is not loopback, /purge and /drain refuse unless ADMIN_TOKEN is set.
+      ADMIN_BIND: ${ADMIN_BIND:-0.0.0.0}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     volumes:
       - cache-data:/data/cache
     ports:
       - "${CACHE_BIND_IP:-0.0.0.0}:80:80"
       - "${CACHE_BIND_IP:-0.0.0.0}:443:443"
-      # Admin port stays on loopback: it carries purge and drain.
+      # Admin port is published to the host's loopback only: it carries purge and drain. Other
+      # containers on this Docker network can still reach the container port directly, which is
+      # why the endpoints also require a token when bound this way.
       - "127.0.0.1:9090:9090"
     cap_add:
       # Required to bind 80 and 443 as a non-root user.

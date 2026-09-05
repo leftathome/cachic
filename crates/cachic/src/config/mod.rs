@@ -101,6 +101,19 @@ pub struct Config {
     #[arg(long, env = "ADMIN_PORT", default_value_t = 9090)]
     pub admin_port: u16,
 
+    /// Address the admin API binds.
+    ///
+    /// Loopback by default. The admin API carries `/purge` and `/drain` - one request empties the
+    /// cache, one takes the instance out of service - and it has no authentication unless
+    /// `ADMIN_TOKEN` is set. It used to bind every interface, which on a LAN deployment meant any
+    /// client could wipe the cache with a single unauthenticated POST (SR-01). ADR-0008 item 7
+    /// always said "local or cluster-only by default"; this is that decision, implemented.
+    ///
+    /// Binding anywhere else keeps `/healthz`, `/readyz` and `/metrics` reachable - that is what
+    /// the port is for - but `/purge` and `/drain` then refuse unless `ADMIN_TOKEN` is set.
+    #[arg(long, env = "ADMIN_BIND", default_value = "127.0.0.1")]
+    pub admin_bind: std::net::IpAddr,
+
     // --- Upstream -----------------------------------------------------------------------------
     /// Resolvers used for upstream lookups. Never the system resolver: in a lancache deployment
     /// the system resolver is the one lying about CDN hostnames, and using it loops traffic back

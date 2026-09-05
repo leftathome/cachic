@@ -78,6 +78,13 @@ spec:
               value: {{ .Values.service.ports.https | quote }}
             - name: ADMIN_PORT
               value: {{ .Values.admin.port | quote }}
+            # The admin API binds loopback by default, which is right for a bare binary and wrong
+            # here: kubelet probes the pod IP, and Prometheus scrapes from another pod, so both
+            # would fail against loopback. Binding wider makes /purge and /drain refuse unless
+            # admin.token is set - the process enforces that per request. Restrict reachability
+            # with networkPolicy.enabled rather than by unsetting this.
+            - name: ADMIN_BIND
+              value: {{ .Values.admin.bind | quote }}
             # Space-separated, matching monolithic's spelling.
             - name: UPSTREAM_DNS
               value: {{ join " " .Values.upstreamDns | quote }}

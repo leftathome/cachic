@@ -1,0 +1,37 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Confines the admin port. The data ports are deliberately open: clients reach this cache because
+their DNS points at it, and they are not enumerable in advance.
+
+The admin port is different. It carries /purge and /drain, and while the process refuses those
+without a token when bound off-box, defence in depth is the point of a policy - an operator who
+sets admin.token should not thereby make the endpoints reachable from every pod in the cluster.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cachic.fullname" . }}
+  labels:
+    {{- include "cachic.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cachic.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # The cache itself, from anywhere on the LAN.
+    - ports:
+        - port: {{ .Values.service.ports.http }}
+          protocol: TCP
+        - port: {{ .Values.service.ports.https }}
+          protocol: TCP
+    # The admin port, only from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ required "networkPolicy.monitoringNamespace is required when networkPolicy.enabled" .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - port: {{ .Values.admin.port }}
+          protocol: TCP
+{{- end }}

@@ -12,6 +12,24 @@ review, no live-hardware testing. `cargo deny check advisories` is clean at this
 
 ---
 
+## Status
+
+Recorded against `v0.1.0-rc5`. The three items the review marked "before any deployment where
+untrusted clients can reach the cache" are fixed on `main`; the rest are open.
+
+| ID | Status |
+|---|---|
+| SR-01 | **Fixed.** Admin API binds `127.0.0.1` by default (`ADMIN_BIND`). Bound wider, `/purge` and `/drain` refuse unless `ADMIN_TOKEN` is set, while health and metrics keep serving. Chart sets the wider bind, because kubelet probes the pod IP, and ships an optional `NetworkPolicy` |
+| SR-02 | **Fixed.** The SNI path applies the matcher before resolving, refusing an unmatched name unless `PASSTHROUGH_UNKNOWN_HOSTS` is set, and counts refusals in `SniStats::not_allow_listed` |
+| SR-07 (timeout) | **Fixed.** A `TokioTimer` is installed and `header_read_timeout` set to 15s |
+| SR-03, SR-04, SR-05, SR-06, SR-08, SR-09, SR-10, SR-11, SR-07 (per-peer cap) | Open |
+
+Each fixed finding's test now asserts the new behaviour instead of the old, with controls so it
+cannot pass vacuously - SR-02's proof checks that an allow-listed name still splices and that
+`passthrough` still opens an unmatched one, and SR-07's passes in ~15s rather than never.
+
+---
+
 ## 1. Threat model
 
 The deployment model is unusual and it drives everything below. cachic is installed by pointing a
@@ -55,19 +73,19 @@ The three inbound arrows are the boundaries that matter. Only the first one is f
 
 ## 2. Findings
 
-| ID | Severity | Finding | Proof |
-|---|---|---|---|
-| SR-01 | **Critical** | Admin API is unauthenticated by default and binds `0.0.0.0`; `/purge` and `/drain` are exposed | test |
-| SR-02 | **Critical** | SNI pass-through is an open TCP relay — FR-64's allow-list half is unimplemented | test |
-| SR-03 | **High** | SNI connections are subject to no limit of any kind | test |
-| SR-07 | **High** | No header-read timeout, and the connection limit has no per-peer component | test |
-| SR-09 | **High** | Upstream response bodies are buffered unbounded during the probe | code |
-| SR-04 | Medium | lancache-format access-log lines are forgeable from a client-supplied header | test |
-| SR-05 | Medium | The domain list is refreshed unpinned and unverified, and wildcards are unvalidated | test |
-| SR-06 | Medium | Distinct upstream URLs collapse to one cache key (poisoning primitive, inherited) | test |
-| SR-10 | Medium | `Vary` and `Cache-Control: private/no-store` are ignored; credentials are forwarded | code |
-| SR-08 | Low | IPv4-embedded IPv6 forms bypass the address guard | test |
-| SR-11 | Low | Upstream error text is reflected to the client; `Host` chooses the upstream port | code |
+| ID | Severity | Finding | Proof | Status |
+|---|---|---|---|---|
+| SR-01 | **Critical** | Admin API is unauthenticated by default and binds `0.0.0.0`; `/purge` and `/drain` are exposed | test | **fixed** |
+| SR-02 | **Critical** | SNI pass-through is an open TCP relay — FR-64's allow-list half is unimplemented | test | **fixed** |
+| SR-03 | **High** | SNI connections are subject to no limit of any kind | test | open |
+| SR-07 | **High** | No header-read timeout, and the connection limit has no per-peer component | test | timeout **fixed**, per-peer cap open |
+| SR-09 | **High** | Upstream response bodies are buffered unbounded during the probe | code | open |
+| SR-04 | Medium | lancache-format access-log lines are forgeable from a client-supplied header | test | open |
+| SR-05 | Medium | The domain list is refreshed unpinned and unverified, and wildcards are unvalidated | test | open |
+| SR-06 | Medium | Distinct upstream URLs collapse to one cache key (poisoning primitive, inherited) | test | open |
+| SR-10 | Medium | `Vary` and `Cache-Control: private/no-store` are ignored; credentials are forwarded | code | open |
+| SR-08 | Low | IPv4-embedded IPv6 forms bypass the address guard | test | open |
+| SR-11 | Low | Upstream error text is reflected to the client; `Host` chooses the upstream port | code | open |
 
 ---
 

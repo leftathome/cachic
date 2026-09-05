@@ -24,7 +24,7 @@ use hyper::{
     service::service_fn,
     Method, Request, Response, StatusCode,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::TcpListener;
 
 use crate::{
@@ -37,6 +37,13 @@ use crate::{
 /// Response bodies are unsync-boxed: foyer's `get_or_fetch` future is `!Sync`, so a body that
 /// awaits it cannot satisfy `BodyExt::boxed`'s `Sync` bound. hyper does not require `Sync` bodies.
 type BoxedBody = UnsyncBoxBody<Bytes, std::io::Error>;
+
+/// How long a client may take to send its request headers.
+///
+/// Generous for a slow LAN client on a busy link, and far short of the indefinite wait that
+/// existed before: the whole point is that a half-sent request eventually costs the attacker the
+/// connection rather than costing us one.
+const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub struct ServerConfig {
     pub orchestrator: Arc<Orchestrator>,
@@ -147,7 +154,17 @@ impl Server {
                     let connection_metrics = config.metrics.clone();
                     let service = service_fn(move |req| handle(req, config.clone(), peer.clone()));
                     // Errors here are client disconnects; the proxy does not care.
-                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                    //
+                    // The timer is not optional. hyper's header-read timeout defaults to 30s, but
+                    // that default is inert without a Timer installed - hyper logs "timeout
+                    // 'header_read_timeout' has default, but no timer set" and applies nothing. A
+                    // connection that sends half a request line then stops was never closed, so
+                    // one host could hold every connection slot indefinitely at no cost (SR-07).
+                    let _ = http1::Builder::new()
+                        .timer(TokioTimer::new())
+                        .header_read_timeout(HEADER_READ_TIMEOUT)
+                        .serve_connection(io, service)
+                        .await;
                     if let Some(metrics) = &connection_metrics {
                         metrics.connections.dec();
                     }

@@ -53,6 +53,11 @@ impl AuthToken {
     ///
     /// Comparison is constant-time in the length of the configured token, so a timing signal
     /// cannot be used to recover it byte by byte.
+    /// Whether a token was configured at all.
+    pub fn is_configured(&self) -> bool {
+        self.0.is_some()
+    }
+
     pub fn permits(&self, headers: &HeaderMap) -> bool {
         let Some(expected) = &self.0 else {
             return true;
@@ -114,6 +119,34 @@ pub struct ApiState {
     pub configured_disk_bytes: u64,
     pub min_free_bytes: u64,
     pub slice_size: u32,
+    /// The admin API is bound somewhere a client could reach, so the destructive endpoints need a
+    /// token rather than relying on the address to confine them.
+    pub mutations_need_token: bool,
+}
+
+/// Refuse a destructive request that nothing is authenticating.
+///
+/// `/purge` empties the cache and `/drain` takes the instance out of service, both in one request.
+/// While the admin API bound every interface with no token by default, either was available to any
+/// client that could reach the port (SR-01). Binding to loopback is the primary fix; this is the
+/// backstop for an operator who binds it wider - as the Helm chart must, so Prometheus can scrape
+/// - without setting a token.
+///
+/// Health and metrics are deliberately not covered. They are why the port is reachable at all, and
+/// neither changes anything.
+fn refuse_unauthenticated_mutation(state: &ApiState) -> Option<axum::response::Response> {
+    if state.mutations_need_token && !state.token.is_configured() {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                "refusing: this endpoint changes state, the admin API is not bound to loopback, \
+                 and ADMIN_TOKEN is not set. Set ADMIN_TOKEN, or bind the admin API to \
+                 loopback with ADMIN_BIND.\n",
+            )
+                .into_response(),
+        );
+    }
+    None
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,6 +260,9 @@ pub async fn purge(
     if !state.token.permits(&headers) {
         return unauthorised();
     }
+    if let Some(refusal) = refuse_unauthenticated_mutation(state) {
+        return refusal;
+    }
 
     let ids = match (&params.prefix, params.all) {
         (Some(prefix), _) => state.index.ids_with_prefix(prefix),
@@ -290,6 +326,9 @@ pub async fn drain(
     };
     if !state.token.permits(&headers) {
         return unauthorised();
+    }
+    if let Some(refusal) = refuse_unauthenticated_mutation(state) {
+        return refusal;
     }
     // Readiness fails immediately so traffic moves away; the process keeps serving what is
     // already in flight. Actual exit is the operator's or the orchestrator's decision.

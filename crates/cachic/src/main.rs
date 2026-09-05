@@ -109,7 +109,7 @@ async fn run(config: Config) -> Result<(), Fatal> {
 
     // Admin first: an orchestrator watching /readyz should see "starting", not a refused
     // connection, while a large cache directory opens.
-    let admin_addr = SocketAddr::from(([0, 0, 0, 0], config.admin_port));
+    let admin_addr = SocketAddr::new(config.admin_bind, config.admin_port);
     let admin_state = AdminState {
         metrics: metrics.clone(),
         readiness: readiness.clone(),
@@ -306,23 +306,39 @@ async fn run(config: Config) -> Result<(), Fatal> {
     // Port 443: SNI pass-through, no decryption (FR-08, N2). Replaces sniproxy in the lancache
     // deployment model.
     let https_addr = SocketAddr::from(([0, 0, 0, 0], config.https_port));
-    let sni = SniProxy::bind(https_addr, sni_resolver, config.https_port)
-        .await
-        .map_err(|e| {
-            let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
-                "\n  Ports below 1024 need CAP_NET_BIND_SERVICE when running as a non-root user. \
+    let sni = SniProxy::bind(
+        https_addr,
+        sni_resolver,
+        config.https_port,
+        services.clone(),
+        config.passthrough_unknown_hosts,
+    )
+    .await
+    .map_err(|e| {
+        let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
+            "\n  Ports below 1024 need CAP_NET_BIND_SERVICE when running as a non-root user. \
                  The container image and the Helm chart grant it; a bare binary needs \
                  `setcap cap_net_bind_service=+ep`, a port mapping, or HTTPS_PORT set higher."
-            } else {
-                ""
-            };
-            Fatal::Unavailable(format!(
-                "cannot bind the HTTPS port {https_addr}: {e}{hint}"
-            ))
-        })?;
+        } else {
+            ""
+        };
+        Fatal::Unavailable(format!(
+            "cannot bind the HTTPS port {https_addr}: {e}{hint}"
+        ))
+    })?;
     tracing::info!(addr = %sni.addr(), "sni pass-through listening");
 
     readiness.set_listeners_bound(true);
+
+    // Loopback confines the destructive endpoints by itself. Anywhere else and they need a token,
+    // which the API enforces per request rather than by refusing to start - health and metrics are
+    // why the port is reachable, and a Kubernetes install has to bind wider to be scraped.
+    if !config.admin_bind.is_loopback() && config.admin_token.is_empty() {
+        tracing::warn!(
+            bind = %config.admin_bind,
+            "admin API is reachable off-box with no ADMIN_TOKEN: /purge and /drain will refuse"
+        );
+    }
 
     late_api.set(ApiState {
         store: store_handle,
@@ -335,6 +351,7 @@ async fn run(config: Config) -> Result<(), Fatal> {
         configured_disk_bytes: config.cache_disk_size,
         min_free_bytes: config.min_free_disk,
         slice_size: config.cache_slice_size as u32,
+        mutations_need_token: !config.admin_bind.is_loopback(),
     });
     tracing::info!(
         authenticated = !config.admin_token.is_empty(),

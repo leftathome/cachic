@@ -44,6 +44,8 @@ pub struct SniStats {
     pub no_sni: AtomicU64,
     /// Closed because the resolved address was refused by the guard.
     pub refused: AtomicU64,
+    /// Closed because the requested name is not in the allow-list (FR-64).
+    pub not_allow_listed: AtomicU64,
     pub upstream_failed: AtomicU64,
     pub bytes_client_to_origin: AtomicU64,
     pub bytes_origin_to_client: AtomicU64,
@@ -60,6 +62,8 @@ impl SniProxy {
         listen: SocketAddr,
         resolver: Arc<UpstreamResolver>,
         port: u16,
+        services: Arc<crate::services::refresh::LiveServices>,
+        passthrough_unknown_hosts: bool,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(listen).await?;
         let addr = listener.local_addr()?;
@@ -68,6 +72,7 @@ impl SniProxy {
 
         let task_stats = stats.clone();
         let task_shutdown = shutdown.clone();
+        let task_services = services;
         tokio::spawn(async move {
             loop {
                 let accepted = tokio::select! {
@@ -85,8 +90,18 @@ impl SniProxy {
                 task_stats.accepted.fetch_add(1, Ordering::Relaxed);
                 let stats = task_stats.clone();
                 let resolver = resolver.clone();
+                let services = task_services.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = splice(stream, resolver, port, stats.clone()).await {
+                    if let Err(e) = splice(
+                        stream,
+                        resolver,
+                        port,
+                        stats.clone(),
+                        services,
+                        passthrough_unknown_hosts,
+                    )
+                    .await
+                    {
                         tracing::debug!(error = %e, "sni connection closed");
                     }
                 });
@@ -125,6 +140,12 @@ pub enum SniError {
     NoServerName,
     #[error("ClientHello exceeded {0} bytes")]
     HelloTooLarge(usize),
+    #[error(
+        "refusing {host}: not in the cache-domains allow-list. Splicing to an arbitrary name \
+         would make this an open relay on the LAN (FR-64); set PASSTHROUGH_UNKNOWN_HOSTS to \
+         allow it deliberately"
+    )]
+    NotAllowListed { host: String },
     #[error("refusing {host}: {source}")]
     Refused {
         host: String,
@@ -147,6 +168,8 @@ async fn splice(
     resolver: Arc<UpstreamResolver>,
     port: u16,
     stats: Arc<SniStats>,
+    services: Arc<crate::services::refresh::LiveServices>,
+    passthrough_unknown_hosts: bool,
 ) -> Result<(), SniError> {
     // Buffer just enough to parse the hello. It is replayed to the origin afterwards, because the
     // origin needs the bytes we consumed to read it.
@@ -179,6 +202,18 @@ async fn splice(
     })
     .await
     .map_err(|_| SniError::HelloTimeout(HELLO_TIMEOUT))??;
+
+    // FR-64 has two halves and this path used to implement only one. The address guard below
+    // stops a splice to a private address; on its own it still relayed to *any public host* the
+    // client named, which is an open TCP relay on the LAN - attribution laundering, egress-filter
+    // bypass, and not even restricted to TLS once the bytes start flowing (SR-02).
+    //
+    // The name check is the other half, and it is the same decision the HTTP path already makes
+    // with the same switch.
+    if !passthrough_unknown_hosts && services.matcher().service_for(&host).is_none() {
+        stats.not_allow_listed.fetch_add(1, Ordering::Relaxed);
+        return Err(SniError::NotAllowListed { host });
+    }
 
     // The guard runs here exactly as on the HTTP path. Without it, anyone on the LAN could name
     // an internal host in their SNI and have us splice to it.
@@ -241,15 +276,26 @@ async fn splice(
 
 #[cfg(test)]
 mod tests {
+
+    /// The bundled list, so a test can opt in or out of the allow-list explicitly.
+    fn test_services() -> std::sync::Arc<crate::services::refresh::LiveServices> {
+        crate::services::refresh::LiveServices::new(crate::services::domains::bundled().unwrap())
+    }
     use super::*;
     use tokio::io::AsyncWriteExt;
 
     async fn proxy(allow_private: bool) -> SniProxy {
         let resolver =
             Arc::new(UpstreamResolver::new(&["1.1.1.1".parse().unwrap()], allow_private).unwrap());
-        SniProxy::bind("127.0.0.1:0".parse().unwrap(), resolver, 443)
-            .await
-            .unwrap()
+        SniProxy::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            resolver,
+            443,
+            test_services(),
+            true,
+        )
+        .await
+        .unwrap()
     }
 
     /// A minimal ClientHello for `host`.
@@ -312,9 +358,16 @@ mod tests {
         // port, so point it at the echo server's port.
         let resolver =
             Arc::new(UpstreamResolver::new(&["1.1.1.1".parse().unwrap()], true).unwrap());
-        let p2 = SniProxy::bind("127.0.0.1:0".parse().unwrap(), resolver, origin_addr.port())
-            .await
-            .unwrap();
+        let p2 = SniProxy::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            resolver,
+            origin_addr.port(),
+            test_services(),
+            // These tests are about the splice mechanism, not the allow-list.
+            true,
+        )
+        .await
+        .unwrap();
         let mut client = TcpStream::connect(p2.addr()).await.unwrap();
         client.write_all(&hello).await.unwrap();
 

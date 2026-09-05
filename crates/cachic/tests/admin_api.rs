@@ -84,6 +84,8 @@ impl Harness {
                     configured_disk_bytes: 64 * 1024 * 1024,
                     min_free_bytes: 1024 * 1024,
                     slice_size: SLICE,
+                    // Loopback in tests, so the destructive endpoints rely on the address.
+                    mutations_need_token: false,
                 });
                 late
             },

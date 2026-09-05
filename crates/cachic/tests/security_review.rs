@@ -83,6 +83,65 @@ async fn sr01_purge_all_needs_no_credentials_by_default() {
     );
 }
 
+/// SR-01 (fixed): the admin API binds loopback unless an operator says otherwise.
+///
+/// The one-request cache wipe was reachable because the listener bound 0.0.0.0 with no token. The
+/// primary fix is the default bind address; this asserts it, because a default is exactly the kind
+/// of thing that quietly regresses.
+#[test]
+fn sr01_the_admin_api_binds_loopback_by_default() {
+    use clap::Parser;
+
+    let config = cachic::config::Config::parse_from(["cachic"]);
+    assert!(
+        config.admin_bind.is_loopback(),
+        "the admin API defaults to binding {}, which exposes /purge and /drain to anything that \
+         can reach the port",
+        config.admin_bind
+    );
+}
+
+/// SR-01 (fixed): bound off-box without a token, the destructive endpoints refuse.
+///
+/// Binding wider is legitimate - a Kubernetes install has to, so Prometheus can scrape /metrics -
+/// so the backstop is per endpoint rather than a refusal to start. Health and metrics keep
+/// working; purge and drain do not, until a token exists.
+#[tokio::test]
+async fn sr01_mutations_refuse_when_reachable_without_a_token() {
+    let harness = AdminHarness::start_with("sr01-open", AuthToken::new(""), true).await;
+    harness.seed("/depot/expensive.chunk").await;
+    assert_eq!(harness.index.len().unwrap(), 1);
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/purge?all=true", harness.server.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        403,
+        "an unauthenticated purge was accepted while the admin API was reachable off-box"
+    );
+    assert_eq!(
+        harness.index.len().unwrap(),
+        1,
+        "the purge was refused but removed the object anyway"
+    );
+
+    // The endpoints that justify the port being reachable still answer.
+    let health = reqwest::Client::new()
+        .get(format!("{}/healthz", harness.server.base_url()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        health.status(),
+        200,
+        "health was collateral damage; only the destructive endpoints should refuse"
+    );
+}
+
 /// The same holds for `/drain`, which takes the node out of service.
 ///
 /// In Kubernetes this is worse than it looks: `/drain` fails readiness, so an unauthenticated
@@ -137,95 +196,130 @@ async fn sr01_a_configured_token_does_defend_the_endpoint() {
 // SR-02 / SR-03: the SNI pass-through relays to any name, and counts no connections.
 // -------------------------------------------------------------------------------------------
 
-/// Port 443 splices to whatever the ClientHello names, with no reference to `cache-domains`.
+/// SR-02 (fixed): the SNI path applies the allow-list, as the HTTP path always did.
 ///
-/// FR-64 is explicit and is a P0: "Refuses to proxy to private/loopback upstream addresses unless
-/// configured, **and only proxies allow-listed hosts unless `passthrough` is on** (the cache is an
-/// open proxy on the LAN otherwise)." The HTTP path implements both halves - `serve()` 404s an
-/// unmatched Host. The SNI path implements only the address guard; `crates/cachic/src/sni/`
-/// contains no reference to `Matcher`, `service_for`, or `DomainList`.
+/// FR-64 has two halves - refuse private addresses, and only proxy allow-listed hosts. The SNI
+/// path shipped only the first through v0.1.0-rc5, which made it an open TCP relay to port 443 of
+/// any host on the internet, with the traffic attributed to the operator.
 ///
-/// The consequence is that cachic is an open TCP relay to port 443 of any host on the internet
-/// for anyone who can reach it. Traffic through it is attributed to the operator's address.
+/// This asserts the gate, and two controls so it cannot pass because everything is broken: an
+/// allow-listed name must still splice, and `passthrough` must still open it deliberately.
 ///
-/// On `allow_private`: the mock origin is on loopback, so the address guard has to be told this
-/// is deliberate - exactly as `proxy_integration.rs` does. That flag is orthogonal to the finding.
-/// The missing gate is the *name* check, and its absence is not conditional on any flag.
+/// On `allow_private`: the mock origin is on loopback, so the address guard is told this is
+/// deliberate, exactly as `proxy_integration.rs` does. It is orthogonal - the gate under test is
+/// the *name* check.
 #[tokio::test]
-async fn sr02_sni_relays_to_a_host_that_is_not_in_the_allow_list() {
-    use cachic::{sni::proxy::SniProxy, upstream::resolver::UpstreamResolver};
+async fn sr02_sni_refuses_a_host_that_is_not_in_the_allow_list() {
+    use cachic::{
+        services::refresh::LiveServices, sni::proxy::SniProxy, upstream::resolver::UpstreamResolver,
+    };
     use cachic_testkit::mockdns::MockDns;
 
-    // An "origin" that is emphatically not a game CDN. It speaks no TLS; the relay does not care,
-    // which is itself part of the finding - after the hello, bytes are copied verbatim.
-    let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin_port = origin.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        let (mut socket, _) = origin.accept().await.unwrap();
-        let mut buf = vec![0u8; 4096];
-        let n = socket.read(&mut buf).await.unwrap_or(0);
-        // Echo a marker back so the test can prove bytes flowed end to end.
-        let _ = socket.write_all(format!("RELAYED:{n}").as_bytes()).await;
-        let _ = socket.flush().await;
-    });
-
-    // A resolver that answers every name with our loopback origin.
-    let dns = MockDns::start("127.0.0.1".parse().unwrap()).await.unwrap();
-    let resolver = Arc::new(UpstreamResolver::with_servers(&[dns.addr()], true).unwrap());
-
-    let proxy = SniProxy::bind("127.0.0.1:0".parse().unwrap(), resolver, origin_port)
-        .await
-        .unwrap();
-
-    // A name that appears in no domain file cachic ships. The bundled list is checked below so
-    // this cannot silently become a false negative.
+    /// A name in no domain file cachic ships.
     const NOT_A_CDN: &str = "evil-relay-target.net";
+    /// A name that is in the bundled list.
+    const A_CDN: &str = "lancache.steamcontent.com";
+
+    let ord = std::sync::atomic::Ordering::Relaxed;
     let bundled = Matcher::build(&cachic::services::domains::bundled().unwrap());
     assert_eq!(
         bundled.service_for(NOT_A_CDN),
         None,
         "the test host is in the allow-list; pick another"
     );
+    assert!(
+        bundled.service_for(A_CDN).is_some(),
+        "the control host is not in the allow-list; pick another"
+    );
 
-    let mut client = tokio::net::TcpStream::connect(proxy.addr()).await.unwrap();
-    client.write_all(&client_hello(NOT_A_CDN)).await.unwrap();
-    client.flush().await.unwrap();
+    // An "origin" that is emphatically not a game CDN, and speaks no TLS. Each connection gets one
+    // reply, so the count of replies is the count of successful relays.
+    let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    let reached = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let origin_reached = reached.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = origin.accept().await else {
+                return;
+            };
+            origin_reached.fetch_add(1, ord);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let _ = socket.write_all(format!("RELAYED:{n}").as_bytes()).await;
+                let _ = socket.flush().await;
+            });
+        }
+    });
 
-    let mut response = Vec::new();
-    let read =
-        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut response)).await;
+    let dns = MockDns::start("127.0.0.1".parse().unwrap()).await.unwrap();
+    let services = LiveServices::new(cachic::services::domains::bundled().unwrap());
 
-    assert!(read.is_ok(), "the relay never completed within 5s");
-    let text = String::from_utf8_lossy(&response);
-    let s = proxy.stats();
-    let ord = std::sync::atomic::Ordering::Relaxed;
+    // Drive one ClientHello through a proxy and report what came back.
+    async fn attempt(proxy_addr: std::net::SocketAddr, host: &str) -> String {
+        let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+        client.write_all(&client_hello(host)).await.unwrap();
+        client.flush().await.unwrap();
+        let mut response = Vec::new();
+        let _ =
+            tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut response)).await;
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    // --- the fix: an unmatched name is refused before anything is dialled --------------------
+    let resolver = Arc::new(UpstreamResolver::with_servers(&[dns.addr()], true).unwrap());
+    let guarded = SniProxy::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        resolver.clone(),
+        origin_port,
+        services.clone(),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let text = attempt(guarded.addr(), NOT_A_CDN).await;
+    assert!(
+        !text.starts_with("RELAYED:"),
+        "the relay carried bytes for a host that is not allow-listed: {text:?}"
+    );
+    assert_eq!(
+        reached.load(ord),
+        0,
+        "the origin was contacted for a host that is not allow-listed"
+    );
+    assert_eq!(
+        guarded.stats().not_allow_listed.load(ord),
+        1,
+        "the refusal was not counted"
+    );
+    assert_eq!(guarded.stats().spliced.load(ord), 0);
+
+    // --- control: an allow-listed name still works -------------------------------------------
+    let text = attempt(guarded.addr(), A_CDN).await;
     assert!(
         text.starts_with("RELAYED:"),
-        "expected the non-CDN origin's bytes to reach the client, got {text:?} \
-         (accepted={} spliced={} no_sni={} refused={} upstream_failed={} dns_queries={})",
-        s.accepted.load(ord),
-        s.spliced.load(ord),
-        s.no_sni.load(ord),
-        s.refused.load(ord),
-        s.upstream_failed.load(ord),
-        dns.queries(),
+        "an allow-listed host no longer splices, so the gate refuses everything: {text:?}"
     );
-    assert_eq!(
-        proxy
-            .stats()
-            .spliced
-            .load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "the proxy did not record a splice"
+    assert_eq!(guarded.stats().spliced.load(ord), 1);
+
+    // --- control: passthrough is still the documented escape hatch ---------------------------
+    let open = SniProxy::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        resolver,
+        origin_port,
+        services,
+        true,
+    )
+    .await
+    .unwrap();
+    let text = attempt(open.addr(), NOT_A_CDN).await;
+    assert!(
+        text.starts_with("RELAYED:"),
+        "passthrough did not permit an unmatched host: {text:?}"
     );
-    assert_eq!(
-        proxy
-            .stats()
-            .refused
-            .load(std::sync::atomic::Ordering::Relaxed),
-        0,
-        "the connection was refused - has the allow-list gate been added?"
-    );
+    assert_eq!(open.stats().not_allow_listed.load(ord), 0);
 }
 
 /// SNI connections are accepted without any limit.
@@ -243,9 +337,15 @@ async fn sr03_sni_accepts_connections_without_any_ceiling() {
     use cachic::{sni::proxy::SniProxy, upstream::resolver::UpstreamResolver};
 
     let resolver = Arc::new(UpstreamResolver::new(&["1.1.1.1".parse().unwrap()], false).unwrap());
-    let proxy = SniProxy::bind("127.0.0.1:0".parse().unwrap(), resolver, 443)
-        .await
-        .unwrap();
+    let proxy = SniProxy::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        resolver,
+        443,
+        cachic::services::refresh::LiveServices::new(cachic::services::domains::bundled().unwrap()),
+        true,
+    )
+    .await
+    .unwrap();
 
     // Open connections and send a single TLS-looking byte, so each is parked in the hello read
     // loop holding a task and a buffer. None of these will ever be counted or refused.
@@ -464,30 +564,35 @@ fn sr06_any_host_in_a_service_can_write_every_key_in_it() {
 /// This test waits past the 30s default deliberately: a shorter wait would prove only that the
 /// connection was open, not that nothing will ever close it.
 #[tokio::test]
-async fn sr07_a_half_sent_request_is_never_timed_out() {
+async fn sr07_a_half_sent_request_is_timed_out() {
     let harness = ProxyHarness::start("sr07").await;
 
     let mut client = tokio::net::TcpStream::connect(harness.server.addr())
         .await
         .unwrap();
-    // A request line and one header, and then silence. Never a blank line, so hyper is still
-    // waiting for headers.
+    // A request line and one header, and then silence. Never a blank line, so the server is still
+    // waiting for headers. Before the timer was installed this connection was held forever, and
+    // one host could take every slot for the cost of a byte each.
     client
         .write_all(b"GET /depot/1/chunk HTTP/1.1\r\nHost: cdn.example.com\r\n")
         .await
         .unwrap();
     client.flush().await.unwrap();
 
-    // Past hyper's default header-read timeout, with margin.
-    tokio::time::sleep(Duration::from_secs(35)).await;
-
-    // If a timeout had fired, the server would have closed the connection and this read would
-    // return 0 bytes (EOF) or an error. Instead it blocks, so the slot is still held.
+    // The configured header-read timeout is 15s. Waiting past it, with margin for a loaded CI box.
     let mut buf = [0u8; 64];
-    let read = tokio::time::timeout(Duration::from_secs(3), client.read(&mut buf)).await;
+    let read = tokio::time::timeout(Duration::from_secs(40), client.read(&mut buf)).await;
+
+    let closed = match read {
+        Ok(Ok(0)) => true,  // clean EOF
+        Ok(Err(_)) => true, // reset
+        Ok(Ok(_)) => true,  // a 408-ish response, then close - also a close
+        Err(_) => false,    // still blocked: nothing ever fires
+    };
     assert!(
-        read.is_err(),
-        "the server closed a half-open request - has a header read timeout been configured?"
+        closed,
+        "a half-sent request was still open after 40s; the header-read timeout is not in effect. \
+         hyper's own default is inert unless a Timer is installed on the builder"
     );
 }
 
@@ -531,6 +636,11 @@ struct AdminHarness {
 
 impl AdminHarness {
     async fn start(tag: &str, token: AuthToken) -> Self {
+        Self::start_with(tag, token, false).await
+    }
+
+    /// `mutations_need_token` mirrors "the admin API is bound somewhere a client can reach it".
+    async fn start_with(tag: &str, token: AuthToken, mutations_need_token: bool) -> Self {
         let scratch = Scratch::new(tag);
         let store = SliceStore::open(
             &scratch.path().join("slices"),
@@ -566,6 +676,8 @@ impl AdminHarness {
             configured_disk_bytes: 64 * 1024 * 1024,
             min_free_bytes: 1024 * 1024,
             slice_size: SLICE,
+            // Loopback in tests, so the destructive endpoints rely on the address.
+            mutations_need_token,
         });
 
         let server = AdminServer::bind_with_api(

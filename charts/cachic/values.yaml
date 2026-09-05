@@ -68,9 +68,17 @@ logging:
   level: info
 
 admin:
+  # Where the admin API listens inside the pod. Must not be loopback: kubelet probes the pod IP
+  # and Prometheus scrapes from another pod. With this bound wider and no token set, /purge and
+  # /drain refuse; /healthz, /readyz and /metrics keep working.
+  bind: 0.0.0.0
   port: 9090
-  # Bearer token for the admin API. Empty means unauthenticated, which is only safe because the
-  # admin port is not exposed by the Service.
+  # Bearer token for the admin API.
+  #
+  # Empty leaves /healthz, /readyz and /metrics open to anything that can reach the admin port,
+  # and makes /purge and /drain refuse. Set it to use them. The previous claim here - that an
+  # empty token was safe because the port is not exposed by the Service - was wrong: every pod in
+  # the cluster can reach a ClusterIP, and /purge empties the cache in one request.
   token: ""
   # Reference an existing Secret instead of putting the token in values.
   existingSecret: ""
@@ -113,6 +121,16 @@ affinity: {}
 
 podAnnotations: {}
 podLabels: {}
+
+# Restrict who may reach the admin port.
+#
+# Off by default because a NetworkPolicy with no CNI enforcing it is a false comfort, and because
+# the namespace a monitoring stack runs in varies. Turn it on and name that namespace: the policy
+# permits the data ports from anywhere and the admin port only from there.
+networkPolicy:
+  enabled: false
+  # Namespace running Prometheus. Required when enabled.
+  monitoringNamespace: monitoring
 
 # Adopt the current settings even though they disagree with what the cache directory records
 # (FORCE_CONFIG). The guard exists so a changed slice size cannot silently orphan a cache, and it
