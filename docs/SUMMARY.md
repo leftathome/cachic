@@ -15,6 +15,7 @@
 
 - [Per-service parity](./service-parity.md)
 - [Known limitations](./known-limitations.md)
+- [Security review](./security-review.md)
 - [Definition of done](./definition-of-done.md)
 - [Release-candidate test plan](./rc-test-plan.md)
 - [RC test results — v0.1.0-rc1](./rc-test-results.md)
