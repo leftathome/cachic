@@ -20,6 +20,7 @@
 - [Benchmarks](./benchmarks/README.md)
   - [M0 measurements](./benchmarks/m0/README.md)
   - [orac parity run](./benchmarks/orac/README.md)
+  - [rc2 development-host measurements](./benchmarks/rc2-dev/README.md)
 
 # Decisions
 
