@@ -14,11 +14,34 @@ checking a change to the pipeline itself.
   QEMU. A release build with LTO under emulation takes long enough to make releasing painful, and
   both architectures are available.
 - **A cosign signature**, keyless. There is no long-lived private key to protect or rotate.
-- **An SBOM** in SPDX JSON, attached to the image as an attestation.
+- **An SBOM** in SPDX JSON, attached to the image as an attestation and to the release.
 - **A Helm chart** pushed to the OCI registry, versioned to match the application. A chart that
   lags its app is a support question waiting to happen.
-- **Static binaries** for linux amd64, linux arm64 and macOS arm64.
+- **Binaries** for linux amd64 and linux arm64, dynamically linked against glibc — see
+  [known limitations](known-limitations.md) for the floor and why they are not static.
+- **A `cachic-tools` tarball** per architecture, holding `bench`, `soak`, `loadtest` and `origin`.
+  These are the harnesses the test plan's measurement sections call for. They are separate from
+  the main tarball because they generate traffic and synthetic data and have no business on a
+  cache serving real clients.
 - **A GitHub release** with a changelog generated from conventional commits.
+
+## Two things about this pipeline that are not obvious
+
+**The SBOM only means something because the binary carries its own dependency list.** syft scans
+the published image, and the image is distroless with a single stripped binary in it — so left to
+itself syft catalogues the Debian base layer and reports about a dozen OS packages, none of them a
+Rust crate. v0.1.0-rc3 shipped exactly that: an SBOM that looked complete and said nothing about
+the 232 crates cachic is built from. The binary is now built with `cargo auditable`, which embeds
+the resolved dependency graph in a `.dep-v0` section that syft, trivy and `cargo audit` all read.
+`strip` is told to keep that section and the build fails if it is gone, because the failure mode
+is silent.
+
+**The GitHub release is created as a draft and published afterwards.** This repository has
+immutable releases enabled, so a published release accepts no further uploads, and a prerelease
+publishes the moment it is created rather than waiting behind `release.prereleased`. Creating it
+published raced its own asset uploads: rc2 published a release with nothing attached, and the tag
+could not be reused because ref creation is restricted. Draft, attach, publish, then assert all
+four tarballs actually arrived.
 
 ## Why the pipeline re-runs the whole gate
 
