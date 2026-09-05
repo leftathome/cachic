@@ -1,7 +1,7 @@
 # rc2 development-host measurements
 
 The measurements behind [sizing.md](../../sizing.md) and behind the retraction of a parity claim
-made from the rc1 results. Taken while fixing the rc1 findings, so they describe rc2 code — which is also rc3's: v0.1.0-rc2
+made from the rc1 results. Taken while fixing the rc1 findings, so they describe rc2 code — which is also rc4's: v0.1.0-rc2
 published a release with no assets attached and could not be re-tagged, so v0.1.0-rc3 carries the
 same contents with the release plumbing fixed.
 

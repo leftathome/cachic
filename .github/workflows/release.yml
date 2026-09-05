@@ -64,12 +64,26 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Version, revision and build time have to reach the image as build args: the Dockerfile
+      # cannot know them, and rc3 shipped labels without any of the three, so an image could not
+      # be traced back to the commit that produced it.
+      - name: Build metadata
+        id: vars
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = tag ] || version="0.0.0-${GITHUB_SHA::7}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.vars.outputs.created }}
           push: ${{ github.event_name == 'push' }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name == 'push' }}
           cache-from: type=gha,scope=${{ matrix.arch }}
@@ -120,8 +134,12 @@ jobs:
       - name: Create the manifest list
         working-directory: /tmp/digests
         run: |
+          # Annotations go on the index itself. Labels live in each architecture's config and are
+          # not what a registry UI or an artefact browser reads when listing the manifest list.
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.meta.outputs.json }}') \
+            $(jq -cr '.labels | to_entries | map("--annotation index:" + .key + "=" + .value) | join(" ")' \
+                <<< '${{ steps.meta.outputs.json }}') \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
       - uses: sigstore/cosign-installer@v3
       - name: Sign keyless

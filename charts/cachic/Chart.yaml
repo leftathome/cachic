@@ -2,8 +2,8 @@ apiVersion: v2
 name: cachic
 description: HTTP caching proxy for game-distribution and OS-update CDN traffic
 type: application
-version: 0.1.0-rc3
-appVersion: "0.1.0-rc3"
+version: 0.1.0-rc4
+appVersion: "0.1.0-rc4"
 home: https://github.com/leftathome/cachic
 sources:
   - https://github.com/leftathome/cachic
@@ -14,3 +14,22 @@ keywords:
   - gaming
 maintainers:
   - name: Steven Wagner
+    url: https://github.com/leftathome
+
+# The chart uses fsGroupChangePolicy (1.20+) and a plain LoadBalancer Service; 1.24 is the floor
+# because anything older is out of support and untested here.
+kubeVersion: ">=1.24.0-0"
+
+annotations:
+  artifacthub.io/license: Apache-2.0
+  # A release candidate. Without this a chart repository presents it as a stable release, which is
+  # the same wrong signal the GitHub release had before prereleases were marked.
+  artifacthub.io/prerelease: "true"
+  artifacthub.io/images: |
+    - name: cachic
+      image: ghcr.io/leftathome/cachic:0.1.0-rc4
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://leftathome.github.io/cachic/
+    - name: Sizing guide
+      url: https://leftathome.github.io/cachic/sizing.html
