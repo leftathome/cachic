@@ -29,10 +29,33 @@ error[E0308]: mismatched types
 - The binary needs a glibc host. Alpine and other musl-based distributions cannot run it directly.
 - FR-73's "static binaries for Linux" is unmet in the *static* sense.
 
-**What would change it.** A one-line upstream fix — `cfg!` to `#[cfg]`. When it lands, add
-`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` back to the release matrix and switch
-the runtime image to `distroless/static`. Both changes are already commented in the Dockerfile and
-`.github/workflows/release.yml`.
+**What would change it, and what it is actually worth.** This was described here as a one-line
+`cfg!` to `#[cfg]` change. That is not quite right, and the difference matters to whoever picks it
+up. The `cfg!` does cause the Darwin branch to be compiled everywhere, but the underlying problem
+is the ioctl request argument: `libc::ioctl` takes `c_int` on musl and `c_ulong` on glibc, so
+*every* branch's `u64` constant fails against musl, not only the macOS one. The fix is a per-libc
+type alias and a cast at each call site — still small, but four lines rather than one, and in a
+different place than the sentence above implied.
+
+Verified locally rather than assumed: with that patch applied to `foyer-storage` 0.22.4 via
+`[patch.crates-io]`, cachic builds for `x86_64-unknown-linux-musl` and the resulting binary is
+`static-pie linked`, runs, and reports its version. So foyer is the only thing in the way.
+
+The prize is real:
+
+| | Base | Binary | Image |
+|---|---|---|---|
+| Today, `distroless/cc` | 25.1 MB | 12.5 MB | **37.6 MB** (14.5 MB compressed) |
+| With musl, `distroless/static` | 3.16 MB | 12.1 MB | **15.3 MB** |
+
+That is a 59% reduction, and it is entirely the base layer. Taking it means either landing the
+change upstream in foyer, or carrying a patched fork in `[patch.crates-io]` — which trades image
+size for a git dependency in the supply chain of a release artefact. That is a judgement call, not
+an obvious win, so it has not been taken.
+
+When it does land, add `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` back to the
+release matrix and switch the runtime image to `distroless/static`. Both changes are already
+commented in the Dockerfile and `.github/workflows/release.yml`.
 
 **Workaround if you need musl today.** Run the container image, which carries its own libc.
 
