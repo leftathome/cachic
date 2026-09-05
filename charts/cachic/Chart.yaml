@@ -2,8 +2,8 @@ apiVersion: v2
 name: cachic
 description: HTTP caching proxy for game-distribution and OS-update CDN traffic
 type: application
-version: 0.1.0-rc4
-appVersion: "0.1.0-rc4"
+version: 0.1.0-rc5
+appVersion: "0.1.0-rc5"
 home: https://github.com/leftathome/cachic
 sources:
   - https://github.com/leftathome/cachic
@@ -27,7 +27,7 @@ annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/images: |
     - name: cachic
-      image: ghcr.io/leftathome/cachic:0.1.0-rc4
+      image: ghcr.io/leftathome/cachic:0.1.0-rc5
   artifacthub.io/links: |
     - name: Documentation
       url: https://leftathome.github.io/cachic/

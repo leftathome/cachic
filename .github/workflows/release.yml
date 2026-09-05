@@ -136,11 +136,22 @@ jobs:
         run: |
           # Annotations go on the index itself. Labels live in each architecture's config and are
           # not what a registry UI or an artefact browser reads when listing the manifest list.
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.meta.outputs.json }}') \
-            $(jq -cr '.labels | to_entries | map("--annotation index:" + .key + "=" + .value) | join(" ")' \
-                <<< '${{ steps.meta.outputs.json }}') \
-            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+          #
+          # Built as an array rather than by expanding a command substitution: label values
+          # contain spaces (the description does), and unquoted word splitting turned the first
+          # one into a bogus image reference -- "failed to parse source \"HTTP-slice\"".
+          meta='${{ steps.meta.outputs.json }}'
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && args+=(-t "$tag")
+          done < <(jq -r '.tags[]' <<< "$meta")
+          while IFS= read -r label; do
+            [ -n "$label" ] && args+=(--annotation "index:$label")
+          done < <(jq -r '.labels | to_entries[] | "\(.key)=\(.value)"' <<< "$meta")
+          for digest in *; do
+            args+=("${{ env.IMAGE }}@sha256:$digest")
+          done
+          docker buildx imagetools create "${args[@]}"
       - uses: sigstore/cosign-installer@v3
       - name: Sign keyless
         # Keyless: there is no long-lived private key to protect or rotate.
