@@ -1,7 +1,9 @@
 # rc2 development-host measurements
 
 The measurements behind [sizing.md](../../sizing.md) and behind the retraction of a parity claim
-made from the rc1 results. Taken while fixing the rc1 findings, so they describe rc2 code.
+made from the rc1 results. Taken while fixing the rc1 findings, so they describe rc2 code — which is also rc3's: v0.1.0-rc2
+published a release with no assets attached and could not be re-tagged, so v0.1.0-rc3 carries the
+same contents with the release plumbing fixed.
 
 **Hardware, and why it limits what this proves.** One machine: WSL2, 12 vCPU, 15 GiB RAM, a
 virtualised disk, glibc 2.35 host. cachic ran in a container; `lancachenet/monolithic` ran in a
