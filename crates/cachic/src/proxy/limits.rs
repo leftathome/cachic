@@ -10,17 +10,33 @@
 //! there the caller is us, back-pressure propagates naturally through the read-ahead window, and
 //! dropping a fetch would mean failing a client request that could simply have waited.
 
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
-/// Bounds the number of simultaneously open client connections.
+/// Bounds the number of simultaneously open client connections, globally and per peer.
+///
+/// The global ceiling alone is not a defence. It is shared by the whole network, so one host that
+/// reaches it denies service to every other client - and reaching it costs an attacker one socket
+/// and one byte each (SR-07). The per-peer ceiling is what stops a single source consuming the
+/// budget; the global one still bounds total memory.
 #[derive(Debug)]
 pub struct ConnectionLimit {
     open: AtomicU64,
     max: u64,
     rejected: AtomicU64,
+    /// Per-peer ceiling. `None` disables per-peer accounting, which is what a caller that has no
+    /// address to attribute a connection to must use.
+    per_peer: Option<u64>,
+    /// Open connections by source address. Entries are removed as they reach zero, so the map is
+    /// bounded by the number of *currently connected* peers rather than every peer ever seen.
+    peers: Mutex<HashMap<IpAddr, u64>>,
+    rejected_per_peer: AtomicU64,
 }
 
 /// Decrements the count when dropped, so a connection cannot leak the slot it took even if its
@@ -28,11 +44,21 @@ pub struct ConnectionLimit {
 #[derive(Debug)]
 pub struct ConnectionPermit {
     limit: Arc<ConnectionLimit>,
+    peer: Option<IpAddr>,
 }
 
 impl Drop for ConnectionPermit {
     fn drop(&mut self) {
         self.limit.open.fetch_sub(1, Ordering::Relaxed);
+        if let Some(peer) = self.peer {
+            let mut peers = self.limit.peers.lock().expect("peer map poisoned");
+            if let Some(count) = peers.get_mut(&peer) {
+                *count -= 1;
+                if *count == 0 {
+                    peers.remove(&peer);
+                }
+            }
+        }
     }
 }
 
@@ -42,11 +68,79 @@ impl ConnectionLimit {
             open: AtomicU64::new(0),
             max,
             rejected: AtomicU64::new(0),
+            per_peer: None,
+            peers: Mutex::new(HashMap::new()),
+            rejected_per_peer: AtomicU64::new(0),
         })
     }
 
-    /// Take a slot, or refuse.
+    /// Also cap how many of those connections any single source address may hold.
+    pub fn with_per_peer(max: u64, per_peer: u64) -> Arc<Self> {
+        Arc::new(Self {
+            open: AtomicU64::new(0),
+            max,
+            rejected: AtomicU64::new(0),
+            per_peer: Some(per_peer),
+            peers: Mutex::new(HashMap::new()),
+            rejected_per_peer: AtomicU64::new(0),
+        })
+    }
+
+    /// Take a slot attributed to `peer`, or refuse.
+    ///
+    /// Refuses when either ceiling is reached. The per-peer slot is claimed first so that a
+    /// refusal there does not disturb the global count.
+    pub fn try_acquire_for(self: &Arc<Self>, peer: IpAddr) -> Option<ConnectionPermit> {
+        if let Some(per_peer) = self.per_peer {
+            let mut peers = self.peers.lock().expect("peer map poisoned");
+            let count = peers.entry(peer).or_insert(0);
+            if *count >= per_peer {
+                self.rejected_per_peer.fetch_add(1, Ordering::Relaxed);
+                self.rejected.fetch_add(1, Ordering::Relaxed);
+                if *count == 0 {
+                    peers.remove(&peer);
+                }
+                return None;
+            }
+            *count += 1;
+            drop(peers);
+
+            match self.acquire_global() {
+                Some(mut permit) => {
+                    permit.peer = Some(peer);
+                    return Some(permit);
+                }
+                None => {
+                    // The global ceiling refused, so give the per-peer slot back.
+                    let mut peers = self.peers.lock().expect("peer map poisoned");
+                    if let Some(count) = peers.get_mut(&peer) {
+                        *count -= 1;
+                        if *count == 0 {
+                            peers.remove(&peer);
+                        }
+                    }
+                    return None;
+                }
+            }
+        }
+        self.acquire_global()
+    }
+
+    /// Connections refused because one peer had too many.
+    pub fn rejected_per_peer(&self) -> u64 {
+        self.rejected_per_peer.load(Ordering::Relaxed)
+    }
+
+    pub fn per_peer(&self) -> Option<u64> {
+        self.per_peer
+    }
+
+    /// Take a slot without attributing it to a peer.
     pub fn try_acquire(self: &Arc<Self>) -> Option<ConnectionPermit> {
+        self.acquire_global()
+    }
+
+    fn acquire_global(self: &Arc<Self>) -> Option<ConnectionPermit> {
         // Compare-and-swap rather than fetch_add-then-check: the latter briefly exceeds the limit
         // and, under a connection storm, that overshoot is exactly when it matters.
         let mut current = self.open.load(Ordering::Relaxed);
@@ -64,6 +158,7 @@ impl ConnectionLimit {
                 Ok(_) => {
                     return Some(ConnectionPermit {
                         limit: self.clone(),
+                        peer: None,
                     })
                 }
                 Err(actual) => current = actual,

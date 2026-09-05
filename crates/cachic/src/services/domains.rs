@@ -43,13 +43,53 @@ pub enum Pattern {
 }
 
 impl Pattern {
+    /// Public suffixes a wildcard may not be rooted at.
+    ///
+    /// `*.com` parsed happily and matched every `.com` host in existence, and a bare `*` matched
+    /// everything (SR-05). That matters more here than a widened allow-list usually would: the
+    /// cache key excludes the hostname by default - the whole point of a LAN cache - so a single
+    /// attacker-controlled hostname inside a service can write every key in that service.
+    ///
+    /// This is a short list, not a public-suffix snapshot, and it is deliberately not a label
+    /// count. The review that found this suggested rejecting parents with fewer than three
+    /// labels, which would also reject `*.windowsupdate.com` - a two-label parent that Microsoft
+    /// owns, and one of the sixteen wildcards in the bundled list. Registrable-at-two-labels is
+    /// the common case, so the rule has to name suffixes rather than count dots.
+    ///
+    /// A bundled PSL would be the thorough version and is the obvious upgrade.
+    const PUBLIC_SUFFIXES: &'static [&'static str] = &[
+        "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk", "com.au", "net.au",
+        "org.au", "edu.au", "gov.au", "co.nz", "net.nz", "org.nz", "co.jp", "ne.jp", "or.jp",
+        "ac.jp", "go.jp", "com.br", "net.br", "org.br", "com.cn", "net.cn", "org.cn", "com.mx",
+        "com.ar", "com.tr", "com.sg", "com.hk", "com.tw", "com.my", "com.ph", "com.vn", "co.kr",
+        "co.za", "co.in", "co.il", "co.th", "com.pl", "com.ua", "com.ru",
+    ];
+
     fn parse(raw: &str) -> Option<Self> {
         let host = raw.trim().trim_end_matches('.').to_ascii_lowercase();
         if host.is_empty() {
             return None;
         }
         Some(match host.strip_prefix("*.") {
-            Some(rest) if !rest.is_empty() => Pattern::Suffix(rest.to_owned()),
+            Some(rest) if !rest.is_empty() => {
+                let labels = rest.split('.').filter(|l| !l.is_empty()).count();
+                let is_public_suffix = labels < 2 || Self::PUBLIC_SUFFIXES.contains(&rest);
+                if is_public_suffix {
+                    tracing::warn!(
+                        pattern = %raw.trim(),
+                        "refusing a wildcard rooted at a public suffix; it would match hosts an \
+                         attacker can register, and any one of them can write every key in the \
+                         service"
+                    );
+                    return None;
+                }
+                Pattern::Suffix(rest.to_owned())
+            }
+            // A bare `*`, or anything else with no usable parent, is not a hostname.
+            _ if host == "*" || host.starts_with('*') => {
+                tracing::warn!(pattern = %raw.trim(), "refusing a wildcard with no parent domain");
+                return None;
+            }
             _ => Pattern::Exact(host),
         })
     }

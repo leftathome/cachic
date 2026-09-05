@@ -14,6 +14,15 @@ use hyper::{header::HeaderMap, StatusCode};
 
 use super::resolver::UpstreamResolver;
 
+/// Ceiling on a buffered upstream body.
+///
+/// Comfortably above any single slice at the sizes cachic supports, and far below the multi-GiB
+/// object a range-ignoring origin will happily send.
+const DEFAULT_MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Slack allowed over the requested range before a 206 is refused.
+const RANGE_SLACK: u64 = 64 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     pub connect_timeout: Duration,
@@ -29,11 +38,19 @@ pub struct ClientConfig {
     /// split is that one origin being slow should not consume the whole global budget and starve
     /// every other service - a Windows Update host stalling must not stop Steam downloading.
     pub per_service_inflight: BTreeMap<String, usize>,
+    /// Largest response body `fetch_range` will buffer.
+    ///
+    /// A ranged fetch expects at most a slice. Without a ceiling, an origin that ignores `Range`
+    /// and answers 200 with a whole object made the probe buffer the entire object into memory -
+    /// on the ordinary path, not an exotic one, since range-ignoring origins are exactly what
+    /// FR-13 exists for (SR-09).
+    pub max_body_bytes: u64,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             connect_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(120),
             retries: 1,
@@ -45,6 +62,8 @@ impl Default for ClientConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpstreamError {
+    #[error("{url} returned a body over the {limit} byte ceiling")]
+    BodyTooLarge { url: String, limit: u64 },
     #[error("building the upstream client failed: {0}")]
     Build(#[source] reqwest::Error),
     #[error(transparent)]
@@ -93,6 +112,14 @@ impl UpstreamResponse {
     }
 
     /// Total object length from a `Content-Range: bytes a-b/total`.
+    /// `Content-Length`, when the origin declared one.
+    ///
+    /// The probe needs this for a range-ignoring origin: the body is deliberately not buffered,
+    /// so its length is no longer available by measuring it.
+    pub fn content_length(&self) -> Option<u64> {
+        self.header("content-length")?.trim().parse().ok()
+    }
+
     pub fn content_range_total(&self) -> Option<u64> {
         let value = self.header("content-range")?;
         let (_, total) = value.rsplit_once('/')?;
@@ -239,17 +266,59 @@ impl UpstreamClient {
                         });
                     }
                     let headers = response.headers().clone();
-                    let body = response
-                        .bytes()
-                        .await
-                        .map_err(|source| UpstreamError::Request {
-                            url: url.to_owned(),
-                            source,
-                        })?;
+
+                    // An origin that ignored Range answers 200 with the whole object. The caller
+                    // only needs the status and Content-Length to conclude `no_ranges`, and every
+                    // byte after that is allocated purely to be discarded - so do not read them.
+                    if status != reqwest::StatusCode::PARTIAL_CONTENT {
+                        return Ok(UpstreamResponse {
+                            status,
+                            headers,
+                            body: bytes::Bytes::new(),
+                        });
+                    }
+
+                    // A 206 should carry the range we asked for. Allow a margin for an origin
+                    // that rounds outward, and refuse anything beyond the configured ceiling.
+                    let expected = end.saturating_sub(start).saturating_add(1);
+                    let limit = expected
+                        .saturating_add(RANGE_SLACK)
+                        .min(self.config.max_body_bytes);
+                    if let Some(declared) = response.content_length() {
+                        if declared > limit {
+                            return Err(UpstreamError::BodyTooLarge {
+                                url: url.to_owned(),
+                                limit,
+                            });
+                        }
+                    }
+
+                    let mut body = bytes::BytesMut::new();
+                    let mut response = response;
+                    loop {
+                        match response.chunk().await {
+                            Ok(Some(chunk)) => {
+                                if body.len() as u64 + chunk.len() as u64 > limit {
+                                    return Err(UpstreamError::BodyTooLarge {
+                                        url: url.to_owned(),
+                                        limit,
+                                    });
+                                }
+                                body.extend_from_slice(&chunk);
+                            }
+                            Ok(None) => break,
+                            Err(source) => {
+                                return Err(UpstreamError::Request {
+                                    url: url.to_owned(),
+                                    source,
+                                })
+                            }
+                        }
+                    }
                     return Ok(UpstreamResponse {
                         status,
                         headers,
-                        body,
+                        body: body.freeze(),
                     });
                 }
                 Err(source) => {

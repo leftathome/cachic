@@ -101,6 +101,18 @@ pub struct Config {
     #[arg(long, env = "ADMIN_PORT", default_value_t = 9090)]
     pub admin_port: u16,
 
+    /// Most simultaneous connections from any one source address.
+    ///
+    /// The global ceiling is shared by the whole LAN, so on its own it is not a defence: one host
+    /// reaching it denies service to everyone, and reaching it costs a socket and a byte each
+    /// (SR-07). This bounds any single source to a fraction of the budget.
+    ///
+    /// Generous by default, because NAT gateways, multi-user machines and a single client opening
+    /// many parallel range requests are all ordinary. Lower it on a network where every address is
+    /// one machine.
+    #[arg(long, env = "MAX_CONNECTIONS_PER_PEER", default_value_t = 512)]
+    pub max_connections_per_peer: u64,
+
     /// Address the admin API binds.
     ///
     /// Loopback by default. The admin API carries `/purge` and `/drain` - one request empties the

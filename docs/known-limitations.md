@@ -119,6 +119,37 @@ ceiling — but it means one unconfigured service can still consume the global b
 Migrating from `lancachenet/monolithic` starts with a cold cache. There is no import and none is
 planned for 1.0; see the [migration guide](./migration-from-lancache.md).
 
+## Distinct upstream URLs can share one cache key
+
+**What.** The cache key is a lossy normalisation of a request target that is sent upstream
+verbatim. `key::normalise` percent-decodes, collapses `//`, `.` and `..`, and drops the query
+string; the fetch URL keeps all of it. Any origin that distinguishes two targets cachic merges will
+serve different bytes that land under one key.
+
+The query string is the sharp edge. Dropping it from the key is *necessary* - CDN authentication
+tokens live there, and keying on them would make every request a miss - but it is still sent to the
+origin. An origin that varies its response on a query parameter therefore lets a client choose the
+bytes stored at another client's key. The same holds for `%2F` against origins that do not decode
+it, and for dot-segments against origins that do not collapse them.
+
+**Why it is not simply fixed.** This is parity with `lancachenet/monolithic`, not a regression:
+nginx keys on `$uri` and proxies `$request_uri`. Keying on the full target would break the caching
+of every CDN that puts a rotating token in the query string, which is most of them.
+
+**Consequences.** It is the most direct cache-poisoning primitive in the design. Exploiting it
+needs an allow-listed origin that will serve attacker-chosen bytes for a URL whose normalised path
+collides with a victim's object; the bundled domain list does not obviously provide one. Steam and
+PlayStation clients hash-verify their downloads and reject poisoned content, so the realistic
+outcome is a failed install rather than code execution. The generation mechanism invalidates an
+object whose validators change, so an attacker who *can* poison will usually cause cache thrash
+rather than a stable poison.
+
+**What reduces it.** Setting `include_host` for a service puts the hostname back in the key, which
+narrows the blast radius to one host rather than a whole service. That costs hit ratio wherever a
+CDN spreads one object across many hostnames, which is the reason it is off by default.
+
+See SR-06 in the [security review](security-review.md).
+
 ## Not verified against real hardware
 
 The parity benchmark against monolithic, a Kubernetes install, prefill runs and the 7-day soak

@@ -46,6 +46,8 @@ pub struct SniStats {
     pub refused: AtomicU64,
     /// Closed because the requested name is not in the allow-list (FR-64).
     pub not_allow_listed: AtomicU64,
+    /// Refused at accept because the connection limit was reached.
+    pub refused_limit: AtomicU64,
     pub upstream_failed: AtomicU64,
     pub bytes_client_to_origin: AtomicU64,
     pub bytes_origin_to_client: AtomicU64,
@@ -64,6 +66,7 @@ impl SniProxy {
         port: u16,
         services: Arc<crate::services::refresh::LiveServices>,
         passthrough_unknown_hosts: bool,
+        connections: Arc<crate::proxy::limits::ConnectionLimit>,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(listen).await?;
         let addr = listener.local_addr()?;
@@ -73,6 +76,7 @@ impl SniProxy {
         let task_stats = stats.clone();
         let task_shutdown = shutdown.clone();
         let task_services = services;
+        let task_connections = connections;
         tokio::spawn(async move {
             loop {
                 let accepted = tokio::select! {
@@ -84,7 +88,16 @@ impl SniProxy {
                         continue;
                     }
                 };
-                let Ok((stream, _peer)) = accepted else {
+                let Ok((stream, source)) = accepted else {
+                    continue;
+                };
+
+                // The HTTP path has taken a permit per connection since TASK-18; this path spawned
+                // a task per socket with no ceiling of any kind, so port 443 had no bound on
+                // concurrent connections, tasks, or the 16 KiB hello buffer each holds (SR-03).
+                let Some(permit) = task_connections.try_acquire_for(source.ip()) else {
+                    task_stats.refused_limit.fetch_add(1, Ordering::Relaxed);
+                    drop(stream);
                     continue;
                 };
                 task_stats.accepted.fetch_add(1, Ordering::Relaxed);
@@ -92,6 +105,8 @@ impl SniProxy {
                 let resolver = resolver.clone();
                 let services = task_services.clone();
                 tokio::spawn(async move {
+                    // Released when this task ends, however it ends.
+                    let _permit = permit;
                     if let Err(e) = splice(
                         stream,
                         resolver,
@@ -293,6 +308,7 @@ mod tests {
             443,
             test_services(),
             true,
+            crate::proxy::limits::ConnectionLimit::new(64),
         )
         .await
         .unwrap()
@@ -365,6 +381,7 @@ mod tests {
             test_services(),
             // These tests are about the splice mechanism, not the allow-list.
             true,
+            crate::proxy::limits::ConnectionLimit::new(64),
         )
         .await
         .unwrap();

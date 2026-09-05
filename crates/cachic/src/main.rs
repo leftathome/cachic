@@ -232,7 +232,10 @@ async fn run(config: Config) -> Result<(), Fatal> {
         compiled.insert(name, compiled_rule);
     }
 
-    let connections = cachic::proxy::limits::ConnectionLimit::new(MAX_CLIENT_CONNECTIONS);
+    let connections = cachic::proxy::limits::ConnectionLimit::with_per_peer(
+        MAX_CLIENT_CONNECTIONS,
+        config.max_connections_per_peer,
+    );
     let drain = cachic::proxy::shutdown::Drain::new();
 
     // Levels, as opposed to events: free disk, index occupancy, in-flight requests, per-service
@@ -267,6 +270,10 @@ async fn run(config: Config) -> Result<(), Fatal> {
             compiled: Arc::new(compiled),
             hostname: hostname(),
             passthrough_unknown_hosts: config.passthrough_unknown_hosts,
+            // A port in the client's Host header must not choose the upstream port (SR-11). An
+            // internal mirror on a non-default port is a real case, so it rides on the same switch
+            // that already says "I know this upstream is not a public CDN".
+            allow_host_port: config.allow_private_upstreams,
             connections: connections.clone(),
             drain: drain.clone(),
             log_format: config.log_format,
@@ -312,6 +319,7 @@ async fn run(config: Config) -> Result<(), Fatal> {
         config.https_port,
         services.clone(),
         config.passthrough_unknown_hosts,
+        connections.clone(),
     )
     .await
     .map_err(|e| {

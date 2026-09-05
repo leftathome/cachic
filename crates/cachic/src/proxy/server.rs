@@ -59,6 +59,15 @@ pub struct ServerConfig {
     pub compiled: Arc<std::collections::HashMap<String, CompiledRule>>,
     pub hostname: String,
     pub passthrough_unknown_hosts: bool,
+    /// Honour a port in the client's `Host` header when building the upstream URL.
+    ///
+    /// Off in production. The matcher strips the port before matching, so `Host: cdn.example.com:22`
+    /// matched a real service and then directed the fetch at port 22 of a real CDN host - a slow
+    /// port scanner sourced from the operator's address, since connect timings differ (SR-11).
+    ///
+    /// On for a test or a deliberate internal mirror, where the origin genuinely listens somewhere
+    /// other than the scheme's default port.
+    pub allow_host_port: bool,
     /// Bounds simultaneously open client connections (NFR-4).
     pub connections: Arc<crate::proxy::limits::ConnectionLimit>,
     /// Tracks in-flight requests so shutdown can wait for them (FR-62).
@@ -93,6 +102,10 @@ impl ServerConfig {
             compiled: Arc::new(std::collections::HashMap::new()),
             hostname: hostname.into(),
             passthrough_unknown_hosts: false,
+            // These constructors exist for tests, which point at a mock origin on an ephemeral
+            // port carried in the Host header. Production builds the struct directly and leaves
+            // this off.
+            allow_host_port: true,
             connections: crate::proxy::limits::ConnectionLimit::new(10_000),
             drain: crate::proxy::shutdown::Drain::new(),
             log_format: crate::config::LogFormat::Json,
@@ -124,12 +137,17 @@ impl Server {
                         continue;
                     }
                 };
-                let Ok((stream, _)) = accepted else { continue };
+                let Ok((stream, source)) = accepted else {
+                    continue;
+                };
 
                 // Refuse rather than queue at the connection limit. A queued connection looks
                 // alive to the client while making no progress, and a game client that times out
                 // silently is worse than one that fails fast and retries.
-                let Some(permit) = config.connections.try_acquire() else {
+                //
+                // Attributed to the source address, so one host cannot take the whole budget and
+                // deny every other client (SR-07).
+                let Some(permit) = config.connections.try_acquire_for(source.ip()) else {
                     tracing::warn!(
                         open = config.connections.open(),
                         max = config.connections.max(),
@@ -246,8 +264,12 @@ async fn handle(
     let response = match serve(req, config.clone()).await {
         Ok(response) => response,
         Err(e) => {
+            // The detail goes to the log, not to the client. The error text renders resolver
+            // refusals - including which category refused, and the "open proxy on the LAN"
+            // wording - and slice errors carrying internal URLs and indices, which together are
+            // an oracle for how the cache behaves toward a given host (SR-11).
             tracing::warn!(error = %e, "request failed");
-            text(StatusCode::BAD_GATEWAY, &format!("upstream error: {e}\n"))
+            text(StatusCode::BAD_GATEWAY, "upstream error\n")
         }
     };
 
@@ -393,7 +415,16 @@ async fn serve(
 
     let cache_key = key::normalise(&service, &host, target, rule);
     let scheme = if rule.upstream_https { "https" } else { "http" };
-    let url = format!("{scheme}://{host}{target}");
+    // Built from the normalised host, not the raw header. The matcher strips the port before
+    // matching, so `Host: cdn.example.com:22` matched the service and then directed the fetch at
+    // port 22 of a real CDN host - a slow port scanner sourced from the operator's address, since
+    // connect timings differ (SR-11). The scheme decides the port.
+    let upstream_host = if config.allow_host_port {
+        host.clone()
+    } else {
+        crate::services::matcher::Matcher::normalise_host(&host)
+    };
+    let url = format!("{scheme}://{upstream_host}{target}");
     let forwarded = headers::forwarded_request_headers(req.headers());
     let raw_range = req
         .headers()

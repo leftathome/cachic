@@ -289,7 +289,17 @@ impl Orchestrator {
             (total, false)
         } else {
             // The origin ignored Range. Full handling is TASK-16; the length is still usable.
-            (response.body.len() as u64, true)
+            //
+            // Read from Content-Length rather than by measuring the body: the client no longer
+            // buffers a range-ignored response, because doing so allocated the entire object on
+            // the ordinary path just to discard it (SR-09). An origin that ignores Range and
+            // declares no length leaves us nothing to plan with.
+            let total = response
+                .content_length()
+                .ok_or_else(|| OrchestratorError::NoLength {
+                    url: url.to_owned(),
+                })?;
+            (total, true)
         };
 
         // A previous version's generation survives in the index even when the entry is stale,

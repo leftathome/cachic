@@ -275,6 +275,7 @@ async fn sr02_sni_refuses_a_host_that_is_not_in_the_allow_list() {
         origin_port,
         services.clone(),
         false,
+        cachic::proxy::limits::ConnectionLimit::new(256),
     )
     .await
     .unwrap();
@@ -311,6 +312,7 @@ async fn sr02_sni_refuses_a_host_that_is_not_in_the_allow_list() {
         origin_port,
         services,
         true,
+        cachic::proxy::limits::ConnectionLimit::new(256),
     )
     .await
     .unwrap();
@@ -322,57 +324,114 @@ async fn sr02_sni_refuses_a_host_that_is_not_in_the_allow_list() {
     assert_eq!(open.stats().not_allow_listed.load(ord), 0);
 }
 
-/// SNI connections are accepted without any limit.
+/// SR-09 (fixed): a range-ignoring origin no longer makes the probe allocate the whole object.
 ///
-/// `Server::bind` (the HTTP path) takes a `ConnectionPermit` per connection and refuses at
-/// `ConnectionLimit`. `SniProxy::bind` spawns a task per accepted socket with no limiter at all,
-/// so port 443 has no ceiling on concurrent connections, tasks, or the ~16 KiB hello buffer each
-/// one may hold.
+/// The probe issues a ranged fetch. When the origin ignores `Range` and answers 200 with the whole
+/// body, the client used to buffer all of it - on the ordinary path, since range-ignoring origins
+/// are exactly what FR-13 exists for - and then throw it away, having learned only `no_ranges`.
+/// Several concurrent probes against large objects were a memory-exhaustion primitive.
 ///
-/// This test asserts the structural fact - that the SNI proxy accepts far more concurrent
-/// connections than the HTTP path's default ceiling would allow - rather than trying to exhaust
-/// memory in CI.
+/// The review could not prove this at runtime without allocating gigabytes in CI. This asserts the
+/// fix instead, which is cheap: the body of a range-ignored response is not read at all, and the
+/// length now comes from `Content-Length`.
 #[tokio::test]
-async fn sr03_sni_accepts_connections_without_any_ceiling() {
-    use cachic::{sni::proxy::SniProxy, upstream::resolver::UpstreamResolver};
+async fn sr09_a_range_ignoring_origin_does_not_get_buffered() {
+    use cachic::upstream::{
+        client::{ClientConfig, UpstreamClient},
+        resolver::UpstreamResolver,
+    };
+    use cachic_testkit::mockcdn::{Config as CdnConfig, MockCdn, RangeBehaviour};
+
+    let origin = MockCdn::start(CdnConfig {
+        range_behaviour: RangeBehaviour::Ignore,
+        ..CdnConfig::default()
+    })
+    .await
+    .unwrap();
+
+    let resolver = Arc::new(UpstreamResolver::new(&["1.1.1.1".parse().unwrap()], true).unwrap());
+    let client = UpstreamClient::new(resolver, ClientConfig::default()).unwrap();
+
+    // Sixteen MiB is far larger than the slice the probe asked for, and large enough that
+    // buffering it would be plainly visible in the assertion below.
+    const OBJECT: u64 = 16 * 1024 * 1024;
+    let url = origin.object_url("sr09", OBJECT);
+
+    let response = client
+        .fetch_range("test", &url, &hyper::header::HeaderMap::new(), 0, 1023)
+        .await
+        .expect("the probe fetch failed");
+
+    assert_eq!(
+        response.status, 200,
+        "the mock did not ignore Range, so this proves nothing"
+    );
+    assert!(
+        response.body.is_empty(),
+        "the range-ignored body was buffered: {} bytes for a 1 KiB request",
+        response.body.len()
+    );
+    assert_eq!(
+        response.content_length(),
+        Some(OBJECT),
+        "the length the probe needs is no longer available"
+    );
+}
+
+/// SR-03 (fixed): SNI connections are subject to the same ceiling as HTTP ones.
+///
+/// `SniProxy::bind` spawned a task per accepted socket with no limiter, so port 443 had no bound
+/// on concurrent connections, tasks, or the 16 KiB hello buffer each holds. It now takes a
+/// `ConnectionPermit` exactly as the HTTP path does.
+#[tokio::test]
+async fn sr03_sni_refuses_connections_past_its_ceiling() {
+    use cachic::{
+        proxy::limits::ConnectionLimit, services::refresh::LiveServices, sni::proxy::SniProxy,
+        upstream::resolver::UpstreamResolver,
+    };
+
+    const CEILING: u64 = 8;
+    let ord = std::sync::atomic::Ordering::Relaxed;
 
     let resolver = Arc::new(UpstreamResolver::new(&["1.1.1.1".parse().unwrap()], false).unwrap());
     let proxy = SniProxy::bind(
         "127.0.0.1:0".parse().unwrap(),
         resolver,
         443,
-        cachic::services::refresh::LiveServices::new(cachic::services::domains::bundled().unwrap()),
+        LiveServices::new(cachic::services::domains::bundled().unwrap()),
         true,
+        ConnectionLimit::new(CEILING),
     )
     .await
     .unwrap();
 
-    // Open connections and send a single TLS-looking byte, so each is parked in the hello read
-    // loop holding a task and a buffer. None of these will ever be counted or refused.
+    // Open well past the ceiling and park each in the hello read loop. Connections beyond it are
+    // dropped at accept, so the parked set stops growing.
     let mut held = Vec::new();
-    for _ in 0..64 {
-        let mut c = tokio::net::TcpStream::connect(proxy.addr()).await.unwrap();
-        c.write_all(&[0x16]).await.unwrap();
-        held.push(c);
+    for _ in 0..(CEILING * 4) {
+        if let Ok(mut c) = tokio::net::TcpStream::connect(proxy.addr()).await {
+            let _ = c.write_all(&[0x16]).await;
+            let _ = c.flush().await;
+            held.push(c);
+        }
     }
 
-    // Give the accept loop a moment to take them all.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Give the accept loop time to process the backlog.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let accepted = proxy
-        .stats()
-        .accepted
-        .load(std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(
-        accepted, 64,
-        "expected every connection to be accepted unconditionally, saw {accepted}"
+    let accepted = proxy.stats().accepted.load(ord);
+    let refused = proxy.stats().refused_limit.load(ord);
+    assert!(
+        accepted <= CEILING,
+        "the SNI listener accepted {accepted} concurrent connections against a ceiling of \
+         {CEILING}; is the limiter wired in?"
     );
-    // There is no rejected counter here, because there is no rejection path to count.
+    assert!(
+        refused > 0,
+        "nothing was refused, so the ceiling was never reached and this proves nothing \
+         (accepted={accepted})"
+    );
 }
-
-// -------------------------------------------------------------------------------------------
-// SR-04: the lancache access log is forgeable from client-controlled input.
-// -------------------------------------------------------------------------------------------
 
 /// A client-chosen `User-Agent` can inject whole fields into the lancache access log.
 ///
@@ -385,18 +444,18 @@ async fn sr03_sni_accepts_connections_without_any_ceiling() {
 /// that parse it positionally into a database. A client can therefore fabricate entries
 /// attributing traffic to another machine, or hide its own.
 #[test]
-fn sr04_a_user_agent_can_forge_fields_in_the_lancache_log() {
-    // Everything after the first quote is the attacker's. It closes the User-Agent field, supplies
-    // a cache status, and opens a fresh forged record blaming another client.
+fn sr04_a_user_agent_cannot_forge_fields_in_the_lancache_log() {
+    // Everything after the first quote used to be the attacker's: it closed the User-Agent field,
+    // supplied a cache status, and opened a fresh forged record blaming another client.
     let hostile = r#"x" "HIT"
 [steam] 10.0.0.99 / - - - [02/Sep/2025:00:00:00 +0000] "GET /forged HTTP/1.1" 200 999999999 "-" "-" "HIT"#;
 
-    // hyper must actually accept this in a header for the finding to be reachable. Quotes are
-    // legal in a field value; only CR and LF are not.
+    // The header itself is still accepted - quotes are legal in a field value, and only CR and LF
+    // are not - so the escaping in the formatter is what has to hold.
     let quoted_only = r#"x" "HIT"#;
     assert!(
         hyper::header::HeaderValue::from_str(quoted_only).is_ok(),
-        "hyper rejects quotes in header values, which would close this hole"
+        "hyper now rejects quotes in header values, so this test no longer exercises the hole"
     );
 
     let event = AccessEvent {
@@ -416,20 +475,42 @@ fn sr04_a_user_agent_can_forge_fields_in_the_lancache_log() {
 
     let line = event.to_lancache();
 
-    // The forged record is present verbatim, and a positional parser reading line-by-line sees a
-    // second request from 10.0.0.99 that never happened.
+    assert_eq!(
+        line.lines().count(),
+        1,
+        "the value broke the record into several lines, so a line-by-line parser sees requests \
+         that never happened: {line}"
+    );
+    // The forged text may still appear - escaped, inside the User-Agent field - and that is fine.
+    // What must not survive is its *structure*: the format has exactly four quoted fields, so a
+    // value that introduced quotes of its own would raise the count and shift every field after
+    // it for a positional parser.
+    assert_eq!(
+        line.matches('"').count(),
+        8,
+        "the value introduced quotes of its own, so a positional parser reads shifted fields: \
+         {line}"
+    );
+
+    // The value is still legible, so an operator can see what was actually sent.
     assert!(
-        line.contains(r#"[steam] 10.0.0.99 / - - - [02/Sep/2025:00:00:00 +0000] "GET /forged"#),
-        "the forged record did not survive into the log line: {line}"
+        line.contains("%22"),
+        "the quote was neither escaped nor removed: {line}"
     );
     assert!(
-        line.contains("999999999"),
-        "the forged byte count is missing: {line}"
+        line.contains("%0A"),
+        "the newline was neither escaped nor removed: {line}"
     );
-    // Nothing escaped the quote, and nothing stripped the newline.
-    assert!(
-        line.contains('\n'),
-        "a newline in a header value reached the access log: {line}"
+
+    // A path is client-controlled too, and goes through the same escaping.
+    let mut event = event;
+    event.user_agent = Some("curl/8".into());
+    event.path = "/depot/\" \"HIT\"\n[steam] 10.0.0.99 /".into();
+    let line = event.to_lancache();
+    assert_eq!(
+        line.lines().count(),
+        1,
+        "a hostile path broke the record into several lines: {line}"
     );
 }
 
@@ -448,39 +529,63 @@ fn sr04_a_user_agent_can_forge_fields_in_the_lancache_log() {
 /// change. Combined with `include_host: false` (the default, and the reason lancache exists), a
 /// single added line turns cachic into an open proxy whose cache is keyed on path alone.
 #[test]
-fn sr05_a_wildcard_may_name_a_public_suffix() {
-    let index = r#"{"cache_domains":[{"name":"steam","domain_files":["s.txt"]}]}"#;
-    let mut files = std::collections::BTreeMap::new();
-    // One line. This is what a compromised or careless upstream commit looks like.
-    files.insert("s.txt".to_string(), "*.com\n".to_string());
+fn sr05_a_wildcard_may_not_name_a_public_suffix() {
+    /// Build a one-service list from a single domain file, as a refresh would.
+    fn list_from(pattern: &str) -> Result<DomainList, cachic::services::domains::DomainsError> {
+        let index = r#"{"cache_domains":[{"name":"steam","domain_files":["s.txt"]}]}"#;
+        let mut files = std::collections::BTreeMap::new();
+        files.insert("s.txt".to_string(), format!("{pattern}\n"));
+        DomainList::parse(index, &files)
+    }
 
-    let list = DomainList::parse(index, &files).expect("a TLD wildcard was accepted");
-    let matcher = Matcher::build(&list);
+    // Rooted at a registry suffix, so anyone can register a host that matches. Because the cache
+    // key excludes the hostname by default, one such host can write every key in the service.
+    // The whole list is rejected rather than silently sanitised, so a refresh carrying one such
+    // line leaves the previous list in place instead of applying a half-trusted one.
+    for hostile in ["*.com", "*.co.uk", "*.net", "*.com.au"] {
+        assert!(
+            list_from(hostile).is_err(),
+            "{hostile} was accepted as a pattern"
+        );
+    }
 
-    for host in [
-        "attacker-controlled.com",
-        "d1234abcd.cloudfront.com",
-        "www.google.com",
-        "anything.at.all.com",
+    // A vendor-owned parent must still work, including at two labels. `*.windowsupdate.com` is in
+    // the bundled list, so a rule that merely counted labels would break a shipped install -
+    // exactly what the review's "fewer than three labels" recommendation would have done.
+    for (allowed, host) in [
+        ("*.windowsupdate.com", "download.windowsupdate.com"),
+        ("*.cdn.blizzard.com", "level3.cdn.blizzard.com"),
+        (
+            "*.dl.delivery.mp.microsoft.com",
+            "a.dl.delivery.mp.microsoft.com",
+        ),
     ] {
+        let list = list_from(allowed).expect("a legitimate vendor wildcard was refused");
         assert_eq!(
-            matcher.service_for(host),
+            list.services[0].patterns.len(),
+            1,
+            "{allowed} was refused; the rule now rejects legitimate vendor domains"
+        );
+        assert_eq!(
+            Matcher::build(&list).service_for(host),
             Some("steam"),
-            "{host} should have matched the TLD wildcard"
+            "{allowed} no longer matches {host}"
         );
     }
 }
 
-/// The narrower form of the same gap: nothing requires a wildcard to have a registrable parent.
+/// SR-05 (fixed): a bare `*` and a single-label parent are both refused.
 #[test]
-fn sr05_a_bare_star_and_a_single_label_are_both_accepted() {
-    let index = r#"{"cache_domains":[{"name":"x","domain_files":["x.txt"]}]}"#;
-    let mut files = std::collections::BTreeMap::new();
-    files.insert("x.txt".to_string(), "*\n*.net\n".to_string());
-    let list = DomainList::parse(index, &files).expect("degenerate patterns were accepted");
-
-    let matcher = Matcher::build(&list);
-    assert_eq!(matcher.service_for("anything.net"), Some("x"));
+fn sr05_a_bare_star_and_a_single_label_are_refused() {
+    let index = r#"{"cache_domains":[{"name":"steam","domain_files":["s.txt"]}]}"#;
+    for hostile in ["*", "*.localhost"] {
+        let mut files = std::collections::BTreeMap::new();
+        files.insert("s.txt".to_string(), format!("{hostile}\n"));
+        assert!(
+            DomainList::parse(index, &files).is_err(),
+            "{hostile} was accepted as a pattern"
+        );
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -596,32 +701,47 @@ async fn sr07_a_half_sent_request_is_timed_out() {
     );
 }
 
-/// The connection limit is global, with nothing scoped to a peer.
+/// SR-07 (fixed, part 2): one peer can no longer consume every connection slot.
 ///
-/// `ConnectionLimit::try_acquire` takes no address, so the 10,000-connection ceiling is shared
-/// between the whole network. One host reaching it denies service to every other client.
-#[tokio::test]
-async fn sr07_one_peer_can_consume_every_connection_slot() {
+/// The ceiling was global and `try_acquire` took no address, so one host reaching it denied
+/// service to the whole network - at the cost of one socket and one byte per slot. The limiter now
+/// accounts per source address, and the global ceiling still bounds total memory.
+#[test]
+fn sr07_one_peer_cannot_consume_every_connection_slot() {
     use cachic::proxy::limits::ConnectionLimit;
 
-    // A small ceiling stands in for the 10,000 default; the accounting is what is under test.
-    let limit = ConnectionLimit::new(4);
+    // A global ceiling of 8, with any one address allowed 2 of them.
+    let limit = ConnectionLimit::with_per_peer(8, 2);
+    let noisy: std::net::IpAddr = "192.0.2.10".parse().unwrap();
+    let quiet: std::net::IpAddr = "192.0.2.11".parse().unwrap();
+
     let mut held = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..2 {
         held.push(
             limit
-                .try_acquire()
-                .expect("the limiter refused below its own ceiling"),
+                .try_acquire_for(noisy)
+                .expect("the per-peer allowance was refused early"),
         );
     }
-
-    // Every subsequent connection is refused, regardless of which host it comes from. There is no
-    // per-peer accounting anywhere in the type.
     assert!(
-        limit.try_acquire().is_none(),
-        "the ceiling was exceeded, which is a different bug"
+        limit.try_acquire_for(noisy).is_none(),
+        "one peer exceeded its per-peer allowance"
     );
-    assert_eq!(limit.rejected(), 1);
+    assert_eq!(limit.rejected_per_peer(), 1);
+
+    // The point of the exercise: another client is unaffected.
+    let other = limit
+        .try_acquire_for(quiet)
+        .expect("a different peer was denied by the noisy one's usage");
+    assert_eq!(limit.open(), 3);
+
+    // Slots come back, and the peer's accounting comes back with them.
+    drop(held.pop());
+    assert!(
+        limit.try_acquire_for(noisy).is_some(),
+        "a released slot was not returned to the peer's allowance"
+    );
+    drop(other);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -828,24 +948,38 @@ fn client_hello(host: &str) -> Vec<u8> {
 /// because the guard's own comment says an IPv4-mapped address "must be judged by its IPv4 rules,
 /// or ::ffff:192.168.1.1 walks straight through" - and these are the same class of trick.
 #[test]
-fn sr08_ipv4_embedded_ipv6_forms_bypass_the_address_guard() {
+fn sr08_ipv4_embedded_ipv6_forms_are_judged_by_ipv4_rules() {
     use cachic::upstream::guard;
 
-    // The form the guard does handle, for contrast.
+    // The form the guard always handled, as a control.
     assert!(
         guard::check("::ffff:192.168.1.1".parse().unwrap(), false).is_err(),
-        "the mapped form is handled; this assertion is the control"
+        "the mapped form is no longer refused; the guard has regressed entirely"
     );
 
-    for bypass in [
+    for embedded in [
         "::192.168.1.1",        // IPv4-compatible, deprecated but still parsed
         "::127.0.0.1",          // loopback, same form
         "64:ff9b::192.168.1.1", // NAT64 well-known prefix
         "2002:c0a8:0101::1",    // 6to4 encapsulating 192.168.1.1
+        "2001:0:1234::1",       // Teredo, refused as a form
     ] {
         assert!(
-            guard::check(bypass.parse().unwrap(), false).is_ok(),
-            "{bypass} was refused - has the guard been widened?"
+            guard::check(embedded.parse().unwrap(), false).is_err(),
+            "{embedded} passed the guard: an IPv4 address hidden in an IPv6 form is still an \
+             IPv4 address, and this is the trick the mapped case exists to stop"
+        );
+    }
+
+    // Public addresses in the same families must still pass, or the fix is just a blanket refusal.
+    for allowed in [
+        "2606:4700:4700::1111", // ordinary public IPv6
+        "64:ff9b::8.8.8.8",     // NAT64 wrapping a public address
+        "2002:0808:0808::1",    // 6to4 wrapping 8.8.8.8
+    ] {
+        assert!(
+            guard::check(allowed.parse().unwrap(), false).is_ok(),
+            "{allowed} was refused; the guard now blocks public addresses too"
         );
     }
 }

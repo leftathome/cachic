@@ -100,7 +100,54 @@ fn check_v6(a: Ipv6Addr) -> Result<(), Refusal> {
     if let Some(v4) = a.to_ipv4_mapped() {
         return check_v4(v4);
     }
+
     let segments = a.segments();
+
+    // The mapped form is not the only one carrying an IPv4 address, and the rest went unjudged
+    // (SR-08). Each of these embeds one, so each is re-checked by IPv4 rules:
+    //
+    //   ::a.b.c.d        deprecated IPv4-compatible. `::` and `::1` are already handled above.
+    //   64:ff9b::/96     the well-known NAT64 prefix.
+    //   2002::/16        6to4, where the address is in segments 1 and 2.
+    //
+    // Whether any of them is routable depends on the host's stack and on a NAT64 or 6to4 path
+    // existing, so this is defence in depth rather than a live bypass. It is the same trick the
+    // mapped case above exists to stop.
+    let embedded_v4 = if segments[..6] == [0, 0, 0, 0, 0, 0] {
+        // IPv4-compatible: the last 32 bits, with the all-zero and loopback cases already refused.
+        Some(Ipv4Addr::new(
+            (segments[6] >> 8) as u8,
+            segments[6] as u8,
+            (segments[7] >> 8) as u8,
+            segments[7] as u8,
+        ))
+    } else if segments[0] == 0x0064 && segments[1] == 0xff9b {
+        Some(Ipv4Addr::new(
+            (segments[6] >> 8) as u8,
+            segments[6] as u8,
+            (segments[7] >> 8) as u8,
+            segments[7] as u8,
+        ))
+    } else if segments[0] == 0x2002 {
+        Some(Ipv4Addr::new(
+            (segments[1] >> 8) as u8,
+            segments[1] as u8,
+            (segments[2] >> 8) as u8,
+            segments[2] as u8,
+        ))
+    } else {
+        None
+    };
+    if let Some(v4) = embedded_v4 {
+        return check_v4(v4);
+    }
+
+    // Teredo. The embedded server address is not the destination, so there is nothing useful to
+    // re-check; refuse the form outright rather than reason about it.
+    if segments[0] == 0x2001 && segments[1] == 0x0000 {
+        return Err(Refusal::Reserved);
+    }
+
     // fc00::/7 unique local.
     if segments[0] & 0xfe00 == 0xfc00 {
         return Err(Refusal::Private);

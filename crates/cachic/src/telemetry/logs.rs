@@ -75,6 +75,38 @@ pub fn clf_timestamp(unix_seconds: u64) -> String {
     )
 }
 
+/// Make a client-controlled value safe to place inside a quoted, positional log field.
+///
+/// The lancache format is positional, quoted and unescaped, and third-party dashboards parse it
+/// into a database. HTTP header values may legally contain a double quote - hyper rejects only CR
+/// and LF - so a `User-Agent` could close its field, append fields of its own, and emit further
+/// whole records, attributing traffic to another machine or feeding arbitrary text to a parser
+/// never written for hostile input (SR-04).
+///
+/// Percent-encoding rather than dropping: the value stays recognisable, stays one field, and a
+/// reader can still tell what was sent. The format is fixed, so this changes values and never
+/// positions.
+fn escape_lancache(value: &str) -> std::borrow::Cow<'_, str> {
+    fn must_escape(c: char) -> bool {
+        c == '"' || c == '\\' || c.is_control()
+    }
+    if !value.contains(must_escape) {
+        return std::borrow::Cow::Borrowed(value);
+    }
+    let mut out = String::with_capacity(value.len() + 8);
+    for c in value.chars() {
+        if must_escape(c) {
+            let mut buf = [0u8; 4];
+            for byte in c.encode_utf8(&mut buf).as_bytes() {
+                let _ = write!(out, "%{byte:02X}");
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 impl AccessEvent {
     /// monolithic's `cachelog` format, field for field.
     ///
@@ -90,10 +122,10 @@ impl AccessEvent {
             self.client_ip,
             self.timestamp,
             self.method,
-            self.path,
+            escape_lancache(&self.path),
             self.status,
             self.bytes,
-            self.user_agent.as_deref().unwrap_or("-"),
+            escape_lancache(self.user_agent.as_deref().unwrap_or("-")),
             self.cache_status,
         );
         out

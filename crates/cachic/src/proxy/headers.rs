@@ -88,6 +88,11 @@ fn is_hop_by_hop(name: &HeaderName, connection_named: &[String]) -> bool {
     HOP_BY_HOP.contains(&lower.as_str()) || connection_named.contains(&lower)
 }
 
+/// Request headers never passed to an origin.
+///
+/// `Proxy-Authorization` is already dropped as hop-by-hop.
+const CREDENTIAL_HEADERS: &[&str] = &["authorization", "cookie"];
+
 /// Headers to send upstream: everything the client sent except hop-by-hop ones.
 ///
 /// `User-Agent` is deliberately forwarded - several services vary their response on it, and
@@ -106,6 +111,23 @@ pub fn forwarded_request_headers(client: &HeaderMap) -> HeaderMap {
         }
         // Range is decided by the orchestrator per slice, not copied from the client.
         if name.as_str().eq_ignore_ascii_case("range") {
+            continue;
+        }
+        // Credentials are never forwarded (SR-10).
+        //
+        // The cache key has no credential component, and by default no host component either -
+        // that is the point of a LAN cache. A response generated for one client's credentials
+        // would be stored under a key every other client can read, which is cache deception. The
+        // safe direction is to make sure such a response is never generated: an origin that needs
+        // credentials returns 401 to us instead, and nothing gets cached.
+        //
+        // A service that genuinely needs a credential forwarded would need a per-service opt-in
+        // and a key that includes the credential. Neither exists, and neither should be added
+        // without deciding what the key looks like first.
+        if CREDENTIAL_HEADERS
+            .iter()
+            .any(|h| name.as_str().eq_ignore_ascii_case(h))
+        {
             continue;
         }
         out.append(name.clone(), value.clone());

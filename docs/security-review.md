@@ -20,9 +20,24 @@ untrusted clients can reach the cache" are fixed on `main`; the rest are open.
 | ID | Status |
 |---|---|
 | SR-01 | **Fixed.** Admin API binds `127.0.0.1` by default (`ADMIN_BIND`). Bound wider, `/purge` and `/drain` refuse unless `ADMIN_TOKEN` is set, while health and metrics keep serving. Chart sets the wider bind, because kubelet probes the pod IP, and ships an optional `NetworkPolicy` |
-| SR-02 | **Fixed.** The SNI path applies the matcher before resolving, refusing an unmatched name unless `PASSTHROUGH_UNKNOWN_HOSTS` is set, and counts refusals in `SniStats::not_allow_listed` |
-| SR-07 (timeout) | **Fixed.** A `TokioTimer` is installed and `header_read_timeout` set to 15s |
-| SR-03, SR-04, SR-05, SR-06, SR-08, SR-09, SR-10, SR-11, SR-07 (per-peer cap) | Open |
+| SR-02 | **Fixed.** The SNI path applies the matcher before resolving, refusing an unmatched name unless `PASSTHROUGH_UNKNOWN_HOSTS` is set, and counts refusals |
+| SR-03 | **Fixed.** The SNI listener takes a `ConnectionPermit` per connection, as the HTTP path does, and counts refusals |
+| SR-04 | **Fixed.** `path` and `user_agent` are percent-escaped in the lancache format, so a value cannot introduce quotes or newlines of its own |
+| SR-05 | **Fixed.** A wildcard rooted at a public suffix, or with no parent, is refused - and refuses the whole list rather than sanitising it silently, so a poisoned refresh leaves the previous list in place |
+| SR-06 | **Documented**, in [known limitations](known-limitations.md). It is parity with monolithic, and keying on the full target would break every CDN that puts a rotating token in the query string |
+| SR-07 | **Fixed.** A `TokioTimer` is installed with a 15s `header_read_timeout`, and the connection limiter accounts per source address (`MAX_CONNECTIONS_PER_PEER`) |
+| SR-08 | **Fixed.** `check_v6` re-checks the IPv4 address embedded in IPv4-compatible, NAT64 and 6to4 forms, and refuses Teredo |
+| SR-09 | **Fixed.** A range-ignored response is no longer buffered at all - the probe takes its length from `Content-Length` - and a 206 is bounded by the requested range plus a margin, under `max_body_bytes` |
+| SR-10 | **Partly fixed.** `Authorization` and `Cookie` are no longer forwarded upstream, which is what caused a private response to exist. `Vary` and `Cache-Control: private/no-store` are still not honoured: doing that properly needs the uncached pass-through path TASK-18 owns, since the store path inserts through `get_or_fetch` |
+| SR-11 | **Fixed.** The 502 body is generic and the detail goes to the log; a port in `Host` no longer chooses the upstream port unless `ALLOW_PRIVATE_UPSTREAMS` is set |
+
+**Still open**: SR-10's `Vary` and `Cache-Control` handling, which is blocked on TASK-18.
+
+**A correction to this review.** SR-05 recommended rejecting a wildcard whose parent has fewer than
+three labels, and stated that all sixteen wildcards in the bundled list clear that bar. One does
+not: `*.windowsupdate.com` has a two-label parent that Microsoft owns. Implementing the
+recommendation as written would have rejected a legitimate entry from the shipped list. The rule
+names public suffixes instead of counting labels.
 
 Each fixed finding's test now asserts the new behaviour instead of the old, with controls so it
 cannot pass vacuously - SR-02's proof checks that an allow-listed name still splices and that
@@ -77,15 +92,15 @@ The three inbound arrows are the boundaries that matter. Only the first one is f
 |---|---|---|---|---|
 | SR-01 | **Critical** | Admin API is unauthenticated by default and binds `0.0.0.0`; `/purge` and `/drain` are exposed | test | **fixed** |
 | SR-02 | **Critical** | SNI pass-through is an open TCP relay — FR-64's allow-list half is unimplemented | test | **fixed** |
-| SR-03 | **High** | SNI connections are subject to no limit of any kind | test | open |
-| SR-07 | **High** | No header-read timeout, and the connection limit has no per-peer component | test | timeout **fixed**, per-peer cap open |
-| SR-09 | **High** | Upstream response bodies are buffered unbounded during the probe | code | open |
-| SR-04 | Medium | lancache-format access-log lines are forgeable from a client-supplied header | test | open |
-| SR-05 | Medium | The domain list is refreshed unpinned and unverified, and wildcards are unvalidated | test | open |
-| SR-06 | Medium | Distinct upstream URLs collapse to one cache key (poisoning primitive, inherited) | test | open |
-| SR-10 | Medium | `Vary` and `Cache-Control: private/no-store` are ignored; credentials are forwarded | code | open |
-| SR-08 | Low | IPv4-embedded IPv6 forms bypass the address guard | test | open |
-| SR-11 | Low | Upstream error text is reflected to the client; `Host` chooses the upstream port | code | open |
+| SR-03 | **High** | SNI connections are subject to no limit of any kind | test | **fixed** |
+| SR-07 | **High** | No header-read timeout, and the connection limit has no per-peer component | test | **fixed** |
+| SR-09 | **High** | Upstream response bodies are buffered unbounded during the probe | code | **fixed** |
+| SR-04 | Medium | lancache-format access-log lines are forgeable from a client-supplied header | test | **fixed** |
+| SR-05 | Medium | The domain list is refreshed unpinned and unverified, and wildcards are unvalidated | test | **fixed** |
+| SR-06 | Medium | Distinct upstream URLs collapse to one cache key (poisoning primitive, inherited) | test | documented |
+| SR-10 | Medium | `Vary` and `Cache-Control: private/no-store` are ignored; credentials are forwarded | code | partly **fixed** |
+| SR-08 | Low | IPv4-embedded IPv6 forms bypass the address guard | test | **fixed** |
+| SR-11 | Low | Upstream error text is reflected to the client; `Host` chooses the upstream port | code | **fixed** |
 
 ---
 
