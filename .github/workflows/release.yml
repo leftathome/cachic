@@ -255,12 +255,47 @@ jobs:
           args: --latest --strip header
         env:
           OUTPUT: CHANGELOG.md
+      # Created as a draft, then published once every asset is attached.
+      #
+      # This repository has immutable releases enabled, so a published release will not accept
+      # further uploads. A prerelease publishes the moment it is created - it does not wait behind
+      # release.prereleased - so creating it published raced its own asset uploads and rc2 failed
+      # with "Cannot upload asset ... to an immutable release" after the artefact count grew.
+      # Drafting first is the path GitHub documents for this.
       - uses: softprops/action-gh-release@v2
+        id: release
         with:
           body_path: CHANGELOG.md
           files: /tmp/artifacts/*
           generate_release_notes: false
+          draft: true
           # A SemVer pre-release tag carries a hyphen. Without this an rc is published as a full
           # release and GitHub marks it Latest, which is exactly the wrong signal for something
           # whose own release notes say not for production.
           prerelease: ${{ contains(github.ref_name, '-') }}
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+          echo "published with these assets:"
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json assets -q '.assets[].name'
+      # An empty release is worse than a failed one: it looks finished. rc1 shipped a tarball that
+      # could not start on two supported distributions, and this is the cheapest place to notice
+      # that an artefact never arrived at all.
+      - name: Check every expected artefact is attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          names=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json assets -q '.assets[].name')
+          missing=0
+          for want in \
+            "cachic-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
+            "cachic-${GITHUB_REF_NAME}-aarch64-unknown-linux-gnu.tar.gz" \
+            "cachic-tools-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
+            "cachic-tools-${GITHUB_REF_NAME}-aarch64-unknown-linux-gnu.tar.gz"; do
+            printf '%s\n' "$names" | grep -qxF "$want" || { echo "::error::missing $want"; missing=1; }
+          done
+          exit $missing
