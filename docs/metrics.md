@@ -39,7 +39,7 @@ The disk tier's own timings come from foyer: `foyer_hybrid_op_duration`,
 |---|---|---|
 | `cachic_upstream_errors_total` | `cdn_service`, `kind` | `kind` is one of `timeout`, `connect`, `origin_4xx`, `origin_5xx`, `resolve` |
 | `cachic_stale_responses_total` | `cdn_service` | Responses served from cache because the origin failed (FR-22). Climbing means clients are being covered for an outage they cannot see |
-| `cachic_checksum_failures_total` | `cdn_service` | **Must be zero.** Non-zero is corruption on disk |
+| `cachic_checksum_failures_total` | `cdn_service` (always `-`) | **Must be zero.** Non-zero is corruption on disk. The label is a sentinel: the decode that detects it runs below the layer that knows which CDN a slice came from |
 | `cachic_upstream_guard_refusals_total` | `reason` | Fetches the address guard refused |
 | `cachic_generation_bumps_total` | `cdn_service` | Objects invalidated because their validators changed upstream |
 

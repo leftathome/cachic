@@ -194,6 +194,12 @@ impl SliceValue {
     }
 }
 
+/// Slices that failed checksum verification on read, process-wide.
+///
+/// A static because the decode runs inside foyer's deserialisation, where no handle to our metrics
+/// exists. The telemetry sampler publishes it.
+pub static CHECKSUM_FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Code for SliceValue {
     fn encode(&self, writer: &mut impl Write) -> Result<()> {
         writer
@@ -238,6 +244,13 @@ impl Code for SliceValue {
         let actual = xxhash_rust::xxh3::xxh3_64(&payload);
         if actual != expected {
             // A corrupt slice is dropped and refetched, never served (FR-42).
+            //
+            // Counted here rather than at a call site because this is the only place the failure
+            // is visible: decode happens inside foyer's deserialisation, and the error is rewrapped
+            // on the way out. `cachic_checksum_failures_total` was declared, registered and never
+            // written, which made "checksum failures must be exactly zero" - a soak pass criterion
+            // and the corruption alarm in the dashboard - a claim nothing could ever falsify.
+            CHECKSUM_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Err(Error::new(
                 ErrorKind::ChecksumMismatch,
                 format!("slice checksum mismatch: expected {expected:#x}, computed {actual:#x}"),

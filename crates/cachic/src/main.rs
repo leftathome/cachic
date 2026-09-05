@@ -188,6 +188,11 @@ async fn run(config: Config) -> Result<(), Fatal> {
 
     // The sampler reports saturation against these ceilings, so keep a copy.
     let per_service_limits = per_service_inflight.clone();
+    let resolver = Arc::new(
+        Arc::try_unwrap(resolver)
+            .unwrap_or_else(|shared| (*shared).clone())
+            .with_metrics(metrics.clone()),
+    );
     let upstream = UpstreamClient::new(
         resolver,
         ClientConfig {
@@ -232,6 +237,16 @@ async fn run(config: Config) -> Result<(), Fatal> {
         compiled.insert(name, compiled_rule);
     }
 
+    // Publish the series whose labels are known now, so a healthy cache shows zero rather than
+    // "No data" on the panels that exist to prove nothing is wrong.
+    metrics.initialise_known_series(
+        &domain_list
+            .services
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>(),
+    );
+
     let connections = cachic::proxy::limits::ConnectionLimit::with_per_peer(
         MAX_CLIENT_CONNECTIONS,
         config.max_connections_per_peer,
@@ -243,6 +258,7 @@ async fn run(config: Config) -> Result<(), Fatal> {
     // only behind the admin API and were absent from every dashboard and alert.
     {
         let sampler_orchestrator = orchestrator.clone();
+        let permits_orchestrator = orchestrator.clone();
         cachic::telemetry::sampler::spawn(
             cachic::telemetry::sampler::Inputs {
                 metrics: metrics.clone(),
@@ -255,6 +271,8 @@ async fn run(config: Config) -> Result<(), Fatal> {
                 service_permits: Arc::new(move |service: &str| {
                     sampler_orchestrator.service_permits(service)
                 }),
+                upstream_capacity: config.upstream_max_inflight,
+                upstream_available: Arc::new(move || permits_orchestrator.upstream_available()),
             },
             std::time::Duration::from_secs(10),
         );

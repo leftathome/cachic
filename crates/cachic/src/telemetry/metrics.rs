@@ -284,6 +284,32 @@ impl Metrics {
         ))
     }
 
+    /// Publish the series whose label values are known in advance, at zero.
+    ///
+    /// A counter vec exports nothing until something observes a label combination, so on a healthy
+    /// cache the guard-refusal panel read "No data" rather than a flat zero - indistinguishable,
+    /// to anyone looking at a dashboard, from a metric that is broken. Where the label set is
+    /// closed and small, saying zero is more useful than saying nothing, and it lets an alert
+    /// tell "no refusals" apart from "not scraped".
+    ///
+    /// `generation_bumps` is deliberately not initialised: its label is the service, and inventing
+    /// a series for all 26 of them would be noise. It appears on the first invalidation.
+    pub fn initialise_known_series(&self, services: &[String]) {
+        for reason in crate::upstream::guard::Refusal::ALL {
+            self.guard_refusals.with_label_values(&[reason]).reset();
+        }
+        // The corruption alarm must read zero rather than be absent: "checksum failures are
+        // exactly zero" is a soak pass criterion, and an absent series cannot satisfy it.
+        self.checksum_failures.with_label_values(&["-"]).reset();
+        for service in services {
+            for status in CACHE_STATUSES {
+                self.requests
+                    .with_label_values(&[service.as_str(), status])
+                    .reset();
+            }
+        }
+    }
+
     /// Render the current values in Prometheus text format.
     pub fn render(&self) -> Result<String, prometheus::Error> {
         let mut buffer = Vec::new();

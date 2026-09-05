@@ -152,6 +152,11 @@ impl Orchestrator {
     ///
     /// Exposed so the metrics sampler can report per-service saturation without the client being
     /// handed around; the orchestrator owns it.
+    /// Upstream permits still available globally, for the in-flight gauge.
+    pub fn upstream_available(&self) -> usize {
+        self.upstream.available_permits()
+    }
+
     pub fn service_permits(&self, service: &str) -> Option<usize> {
         self.upstream.service_permits(service)
     }
@@ -197,6 +202,22 @@ impl Orchestrator {
     /// Generation is part of the slice key, so incrementing it makes every stored slice of the
     /// old version unreachable at once. There is no sweep and no window in which a response
     /// could mix versions; the old slices are evicted in the ordinary course of things.
+    /// Record an upstream fetch. `cachic_bytes_fetched_total` and `cachic_upstream_seconds` were
+    /// both declared and never written, which left the dashboard's "bytes served vs fetched" and
+    /// "upstream fetch latency" panels permanently empty.
+    fn record_fetch(&self, service: &str, began: std::time::Instant, bytes: u64) {
+        if let Some(metrics) = &self.metrics {
+            metrics
+                .upstream_seconds
+                .with_label_values(&[service])
+                .observe(began.elapsed().as_secs_f64());
+            metrics
+                .bytes_fetched
+                .with_label_values(&[service])
+                .inc_by(bytes);
+        }
+    }
+
     fn bump_generation(&self, object: ObjectId) -> u32 {
         let next = match self.index.invalidate(&object) {
             Ok(generation) => generation,
@@ -270,10 +291,12 @@ impl Orchestrator {
     ) -> Result<ObjectMeta, OrchestratorError> {
         let start = index as u64 * self.slice_size as u64;
         let end = start + self.slice_size as u64 - 1;
+        let began = std::time::Instant::now();
         let response = self
             .upstream
             .fetch_range(&key.service, url, headers, start, end)
             .await?;
+        self.record_fetch(&key.service, began, response.body.len() as u64);
 
         let etag = response.header("etag").map(str::to_owned);
         let last_modified = response.header("last-modified").map(str::to_owned);
@@ -464,15 +487,28 @@ impl Orchestrator {
         let expected_len = extent.len();
         let fetch_url = url.clone();
         let service = plan.service.clone();
+        let fetch_metrics = self.metrics.clone();
+        let metric_service = plan.service.clone();
 
         let result = self
             .store
             .get_or_fetch(key, move || async move {
                 let mismatch = mismatch_flag;
                 let observed = observed_slot;
+                let began = std::time::Instant::now();
                 let response = upstream
                     .fetch_range(&service, &fetch_url, &headers, extent.start, extent.end)
                     .await?;
+                if let Some(metrics) = &fetch_metrics {
+                    metrics
+                        .upstream_seconds
+                        .with_label_values(&[&metric_service])
+                        .observe(began.elapsed().as_secs_f64());
+                    metrics
+                        .bytes_fetched
+                        .with_label_values(&[&metric_service])
+                        .inc_by(response.body.len() as u64);
+                }
                 let found = validators::Validators::new(
                     response.header("etag").map(str::to_owned),
                     response.header("last-modified").map(str::to_owned),
@@ -514,6 +550,12 @@ impl Orchestrator {
                 // crosses the store boundary and is rewrapped, so the message does not survive.
                 if mismatch.load(Ordering::Relaxed) {
                     let generation = self.bump_generation(plan_object);
+                    if let Some(metrics) = &self.metrics {
+                        metrics
+                            .generation_bumps
+                            .with_label_values(&[&service_label])
+                            .inc();
+                    }
                     let now = observed
                         .lock()
                         .ok()

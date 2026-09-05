@@ -16,6 +16,9 @@ use crate::{
 /// Reports permits still available for a service, or `None` if it has no ceiling.
 pub type ServicePermits = Arc<dyn Fn(&str) -> Option<usize> + Send + Sync>;
 
+/// Reports upstream permits still available globally, for the in-flight gauge.
+pub type GlobalPermits = Arc<dyn Fn() -> usize + Send + Sync>;
+
 pub struct Inputs {
     pub metrics: Arc<Metrics>,
     pub index: Arc<ObjectIndex>,
@@ -26,6 +29,9 @@ pub struct Inputs {
     /// Per-service upstream ceilings, so saturation can be read as a ratio (FR-09).
     pub per_service_limits: std::collections::BTreeMap<String, usize>,
     pub service_permits: ServicePermits,
+    /// Global upstream concurrency, for `cachic_upstream_inflight`.
+    pub upstream_capacity: usize,
+    pub upstream_available: GlobalPermits,
 }
 
 /// Sample every `interval` until the process exits.
@@ -46,6 +52,24 @@ fn sample(i: &Inputs) {
     let m = &i.metrics;
 
     m.requests_in_flight.set(i.drain.inflight() as i64);
+
+    // Both were declared and never written. In-flight is a level, so it is sampled. Checksum
+    // failures are detected inside foyer's deserialisation, where no handle to the metrics exists,
+    // so the codec keeps a process-wide counter and it is published from here.
+    let available = (i.upstream_available)();
+    m.inflight
+        .set(i.upstream_capacity.saturating_sub(available) as i64);
+    //
+    // The label value is "-", not a service: the decode that detects corruption runs below the
+    // layer that knows which CDN a slice came from. `docs/metrics.md` says so too.
+    let failures =
+        crate::store::slice::CHECKSUM_FAILURES.load(std::sync::atomic::Ordering::Relaxed);
+    let already = m.checksum_failures.with_label_values(&["-"]).get();
+    if failures > already {
+        m.checksum_failures
+            .with_label_values(&["-"])
+            .inc_by(failures - already);
+    }
     m.draining.set(i.drain.is_draining() as i64);
 
     let indexed_bytes = i.index.total_bytes().unwrap_or(0);

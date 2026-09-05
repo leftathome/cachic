@@ -26,6 +26,31 @@ pub enum Refusal {
     Reserved,
 }
 
+impl Refusal {
+    /// Every reason, so the metric can publish them at zero before any refusal happens.
+    pub const ALL: &'static [&'static str] = &[
+        "loopback",
+        "private",
+        "link_local",
+        "unspecified",
+        "multicast_or_broadcast",
+        "reserved",
+    ];
+
+    /// A stable, closed label value. The `Display` text is prose and would make an unstable
+    /// metric label.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Refusal::Loopback => "loopback",
+            Refusal::Private => "private",
+            Refusal::LinkLocal => "link_local",
+            Refusal::Unspecified => "unspecified",
+            Refusal::MulticastOrBroadcast => "multicast_or_broadcast",
+            Refusal::Reserved => "reserved",
+        }
+    }
+}
+
 /// Whether an address may be used as an upstream.
 ///
 /// `allow_private` corresponds to an operator deliberately pointing the cache at an internal

@@ -58,6 +58,8 @@ pub enum ResolveError {
 pub struct UpstreamResolver {
     inner: TokioResolver,
     allow_private: bool,
+    /// Optional so every test that builds a resolver does not have to build a metrics registry.
+    metrics: Option<Arc<crate::telemetry::metrics::Metrics>>,
 }
 
 impl std::fmt::Debug for UpstreamResolver {
@@ -117,7 +119,27 @@ impl UpstreamResolver {
         Ok(Self {
             inner,
             allow_private,
+            metrics: None,
         })
+    }
+
+    /// Count guard refusals.
+    ///
+    /// Both the HTTP and SNI paths resolve through here, so this is the one place that sees every
+    /// refusal. `cachic_upstream_guard_refusals_total` was declared and never written, so the
+    /// dashboard's guard panel could not show a refusal even while the guard was doing its job.
+    pub fn with_metrics(mut self, metrics: Arc<crate::telemetry::metrics::Metrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    fn count_refusal(&self, refusal: &Refusal) {
+        if let Some(metrics) = &self.metrics {
+            metrics
+                .guard_refusals
+                .with_label_values(&[refusal.reason()])
+                .inc();
+        }
     }
 
     /// Resolve a hostname to socket addresses that are safe to fetch from.
@@ -131,10 +153,13 @@ impl UpstreamResolver {
         if let Ok(ip) = host.parse::<IpAddr>() {
             return match guard::check(ip, self.allow_private) {
                 Ok(()) => Ok(vec![SocketAddr::new(ip, port)]),
-                Err(refusal) => Err(ResolveError::Refused {
-                    host: host.to_owned(),
-                    refusal,
-                }),
+                Err(refusal) => {
+                    self.count_refusal(&refusal);
+                    Err(ResolveError::Refused {
+                        host: host.to_owned(),
+                        refusal,
+                    })
+                }
             };
         }
 
@@ -166,9 +191,11 @@ impl UpstreamResolver {
             });
         }
         if allowed.is_empty() {
+            let refusal = first_refusal.unwrap_or(Refusal::Private);
+            self.count_refusal(&refusal);
             return Err(ResolveError::Refused {
                 host: host.to_owned(),
-                refusal: first_refusal.unwrap_or(Refusal::Private),
+                refusal,
             });
         }
         Ok(allowed)
