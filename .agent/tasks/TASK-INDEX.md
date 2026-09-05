@@ -103,12 +103,14 @@ code.
 | [TASK-30](./TASK-30-grafana-dashboard.md) | Grafana dashboard | Done |
 | [TASK-31](./TASK-31-service-rule-parity.md) | Per-service rule parity review | Done (real-traffic replay outstanding) |
 | [TASK-32](./TASK-32-docs-site.md) | Documentation site | Done |
-| [TASK-33](./TASK-33-soak-and-v1.md) | Soak, definition of done, v1.0 release | 0.1.0-rc1 tagged; validation runs on real hardware per docs/rc-test-plan.md |
+| [TASK-33](./TASK-33-soak-and-v1.md) | Soak, definition of done, v1.0 release | 0.1.0-rc2 tagged; validation runs on real hardware per docs/rc-test-plan.md |
+| [TASK-34](./TASK-34-disk-tier-read-amplification.md) | Disk-tier read amplification and the warm-serving gap | Open — needs real NVMe to confirm it is not a WSL2 artefact |
 
 **Exit criteria**: Appendix C definition of done.
 
 **Status: assessed in `docs/definition-of-done.md`.** Six items are blocked on the reference
-hardware and real client credentials; none is blocked on code. No tag has been pushed.
+hardware and real client credentials; none is blocked on code. v0.1.0-rc2 is tagged; every rc1
+finding is fixed and the rc2 plan adds a regression section covering them.
 
 ## Dependency Notes
 
