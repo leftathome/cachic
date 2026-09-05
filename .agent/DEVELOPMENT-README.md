@@ -2,8 +2,10 @@
 
 **Project**: Single-binary HTTP caching proxy for game-distribution and OS-update CDN traffic; a drop-in replacement for the nginx engine inside `lancachenet/monolithic`.
 **Tech Stack**: Rust (tokio, hyper, reqwest/rustls, hickory-resolver), foyer hybrid RAM+disk store, redb object index, axum admin API, Prometheus metrics, Docker + Helm/Kubernetes
-**Status**: Greenfield - PRD and implementation plan written, M0 (spike + ADRs) not started
-**Updated**: 2026-09-01
+**Status**: M0-M4 delivered; TASK-01 to TASK-33 done, 369 tests, `v0.1.0-rc5` published.
+Remaining work is validation on real hardware per `docs/rc-test-plan.md`, plus TASK-34
+(warm-serving gap).
+**Updated**: 2026-09-05
 
 ---
 
