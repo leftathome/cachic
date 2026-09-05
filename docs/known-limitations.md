@@ -53,6 +53,9 @@ change upstream in foyer, or carrying a patched fork in `[patch.crates-io]` — 
 size for a git dependency in the supply chain of a release artefact. That is a judgement call, not
 an obvious win, so it has not been taken.
 
+Filed upstream as [foyer#1338](https://github.com/foyer-rs/foyer/issues/1338), with the patch and
+the reproduction.
+
 When it does land, add `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` back to the
 release matrix and switch the runtime image to `distroless/static`. Both changes are already
 commented in the Dockerfile and `.github/workflows/release.yml`.

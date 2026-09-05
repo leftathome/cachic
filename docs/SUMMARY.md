@@ -7,6 +7,7 @@
 - [Quickstart with compose](./quickstart.md)
 - [Kubernetes](./kubernetes.md)
 - [Sizing](sizing.md)
+- [Metrics](metrics.md)
 - [Configuration reference](./configuration.md)
 - [Migrating from lancache](./migration-from-lancache.md)
 
