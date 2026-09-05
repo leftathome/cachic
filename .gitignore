@@ -37,3 +37,6 @@ target
 fuzz/target
 fuzz/artifacts
 target/book
+
+# Worktrees created by the agent harness; never part of the repository.
+.claude/worktrees/
